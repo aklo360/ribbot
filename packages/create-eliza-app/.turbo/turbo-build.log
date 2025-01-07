@@ -1,0 +1,15 @@
+
+
+> create-eliza-app@0.1.7 build /Users/aklo/dev/ribbot/packages/create-eliza-app
+> unbuild
+
+[36mℹ[39m Automatically detected entries: [36m[1msrc/index[22m[39m [90m[esm] [cjs][39m                                                                           [90m1:35:28 AM[39m
+[36mℹ[39m [36mBuilding create-eliza-app[39m                                                                                                       [90m1:35:28 AM[39m
+[36mℹ[39m Cleaning dist directory: [36m./dist[39m                                                                                                 [90m1:35:28 AM[39m
+[32m✔[39m [32mBuild succeeded for create-eliza-app[39m                                                                                            [90m1:35:28 AM[39m
+  [1mdist/index.cjs[22m (total size: [36m1.65 kB[39m, chunk size: [36m1.65 kB[39m)                                                                        [90m1:35:28 AM[39m
+
+  [1mdist/index.mjs[22m (total size: [36m1.64 kB[39m, chunk size: [36m1.64 kB[39m)                                                                        [90m1:35:28 AM[39m
+
+Σ Total dist size (byte size): [36m3.29 kB[39m
+                                                                                                                                   [90m1:35:28 AM[39m
