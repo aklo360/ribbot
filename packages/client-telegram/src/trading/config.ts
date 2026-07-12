@@ -1,4 +1,6 @@
-import type { IAgentRuntime } from "@elizaos/core";
+export type SettingsSource = {
+    getSetting(key: string): unknown;
+};
 
 export type TradingConfig = {
     tgTrader: boolean;
@@ -31,13 +33,13 @@ export function parseBoolean(value: unknown, fallback = false): boolean {
     return fallback;
 }
 
-function getSetting(runtime: IAgentRuntime, key: string): string | undefined {
+function getSetting(runtime: SettingsSource, key: string): string | undefined {
     const value = runtime.getSetting(key) || process.env[key];
     return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function getNumberSetting(
-    runtime: IAgentRuntime,
+    runtime: SettingsSource,
     key: string,
     fallback: number
 ): number {
@@ -48,7 +50,7 @@ function getNumberSetting(
 }
 
 function getBoundedIntegerSetting(
-    runtime: IAgentRuntime,
+    runtime: SettingsSource,
     key: string,
     fallback: number,
     min: number,
@@ -59,7 +61,7 @@ function getBoundedIntegerSetting(
     return Math.min(Math.max(parsed, min), max);
 }
 
-export function loadTradingConfig(runtime: IAgentRuntime): TradingConfig {
+export function loadTradingConfig(runtime: SettingsSource): TradingConfig {
     const tgTrader = parseBoolean(getSetting(runtime, "TG_TRADER"), false);
     const tradingEnabled = parseBoolean(
         getSetting(runtime, "RIBBOT_TRADING_ENABLED"),
