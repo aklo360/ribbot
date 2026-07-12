@@ -3,6 +3,8 @@ import { message } from "telegraf/filters";
 import { IAgentRuntime, elizaLogger } from "@elizaos/core";
 import { MessageManager } from "./messageManager.ts";
 import { getOrCreateRecommenderInBe } from "./getOrCreateRecommenderInBe.ts";
+import { parseBoolean } from "./trading/config.ts";
+import { TradingBot } from "./trading/TradingBot.ts";
 
 export class TelegramClient {
     private bot: Telegraf<Context>;
@@ -10,7 +12,8 @@ export class TelegramClient {
     private messageManager: MessageManager;
     private backend;
     private backendToken;
-    private tgTrader;
+    private tgTrader: boolean;
+    private tradingBot: TradingBot;
 
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
@@ -19,7 +22,8 @@ export class TelegramClient {
         this.messageManager = new MessageManager(this.bot, this.runtime);
         this.backend = runtime.getSetting("BACKEND_URL");
         this.backendToken = runtime.getSetting("BACKEND_TOKEN");
-        this.tgTrader = runtime.getSetting("TG_TRADER"); // boolean To Be added to the settings
+        this.tgTrader = parseBoolean(runtime.getSetting("TG_TRADER"), false);
+        this.tradingBot = new TradingBot(this.bot, this.runtime);
         elizaLogger.log("✅ TelegramClient constructor completed");
     }
 
@@ -28,6 +32,7 @@ export class TelegramClient {
         try {
             await this.initializeBot();
             this.setupMessageHandlers();
+            this.tradingBot.startActivityAlerts();
             this.setupShutdownHandlers();
         } catch (error) {
             elizaLogger.error("❌ Failed to launch Telegram bot:", error);
@@ -128,6 +133,10 @@ export class TelegramClient {
                     }
                 }
 
+                if (await this.tradingBot.handleMessage(ctx)) {
+                    return;
+                }
+
                 await this.messageManager.handleMessage(ctx);
             } catch (error) {
                 elizaLogger.error("❌ Error handling message:", error);
@@ -143,6 +152,24 @@ export class TelegramClient {
                             replyError
                         );
                     }
+                }
+            }
+        });
+
+        this.bot.on("callback_query", async (ctx) => {
+            try {
+                if (await this.tradingBot.handleCallbackQuery(ctx)) {
+                    return;
+                }
+            } catch (error) {
+                elizaLogger.error("❌ Error handling callback query:", error);
+                try {
+                    await ctx.answerCbQuery("Unable to process that action.");
+                } catch (replyError) {
+                    elizaLogger.error(
+                        "Failed to answer callback query:",
+                        replyError
+                    );
                 }
             }
         });
@@ -191,6 +218,7 @@ export class TelegramClient {
 
     public async stop(): Promise<void> {
         elizaLogger.log("Stopping Telegram bot...");
+        await this.tradingBot.stopActivityAlerts();
         await this.bot.stop();
         elizaLogger.log("Telegram bot stopped");
     }
