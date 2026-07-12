@@ -51,4 +51,5 @@ coverage/
 
 # Project specific
 .turbo
-scraper/.git/ 
+scraper/.git/
+.state/
