@@ -1,6 +1,10 @@
 import { Context, Markup, Telegraf } from "telegraf";
-import { IAgentRuntime, elizaLogger } from "@elizaos/core";
-import { loadTradingConfig, type TradingConfig } from "./config.ts";
+import {
+    loadTradingConfig,
+    type SettingsSource,
+    type TradingConfig,
+} from "./config.ts";
+import { logger } from "./logger.ts";
 import { ActivityAlertPoller } from "./activityAlerts.ts";
 import {
     parseAutoBuyIntent,
@@ -223,7 +227,7 @@ export class TradingBot {
     private readonly store: TradingStateStore;
     private readonly activityAlertPoller: ActivityAlertPoller;
 
-    constructor(bot: Telegraf<Context>, runtime: IAgentRuntime) {
+    constructor(bot: Telegraf<Context>, runtime: SettingsSource) {
         this.bot = bot;
         this.config = loadTradingConfig(runtime);
         this.store = new TradingStateStore(this.config.stateFile);
@@ -237,8 +241,8 @@ export class TradingBot {
             maxEventsPerMessage: this.config.activityAlertMaxEventsPerMessage,
             store: this.store,
             logger: {
-                info: (...values) => elizaLogger.info(...values),
-                warn: (...values) => elizaLogger.warn(...values),
+                info: (...values) => logger.info(...values),
+                warn: (...values) => logger.warn(...values),
             },
             sendMessage: (telegramUserId, text) =>
                 this.bot.telegram.sendMessage(
@@ -1118,7 +1122,7 @@ export class TradingBot {
                     this.walletKeyboard(updated)
                 );
             } catch (error) {
-                elizaLogger.error("FTX/FrogX wallet selection failed", error);
+                logger.error("FTX/FrogX wallet selection failed", error);
                 await ctx.reply(
                     "FTX/FrogX could not confirm the active-wallet change. The prior wallet remains selected.",
                     this.walletKeyboard(currentUser)
@@ -1209,7 +1213,7 @@ export class TradingBot {
                 this.walletKeyboard(updated)
             );
         } catch (error) {
-            elizaLogger.error("FTX/FrogX wallet setup failed", error);
+            logger.error("FTX/FrogX wallet setup failed", error);
             await ctx.reply(
                 "Wallet setup failed through FTX/FrogX. No private key was created or shown by Ribbot.",
                 this.menuKeyboard()
@@ -1445,7 +1449,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX account fetch failed", error);
+            logger.warn("FTX/FrogX account fetch failed", error);
             await ctx.reply(
                 [
                     "FTX/FrogX account sync is unavailable right now.",
@@ -1531,7 +1535,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX control code request failed", error);
+            logger.warn("FTX/FrogX control code request failed", error);
             await ctx.reply(
                 "FTX/FrogX could not create a control code right now. No account session was opened."
             );
@@ -1609,7 +1613,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX referral request failed", error);
+            logger.warn("FTX/FrogX referral request failed", error);
             await ctx.reply(
                 "FTX/FrogX could not load referral tracking right now. No referral metadata was changed."
             );
@@ -1815,7 +1819,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn(
+            logger.warn(
                 "FTX/FrogX valued positions unavailable; using balances",
                 error
             );
@@ -1909,7 +1913,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX positions failed", error);
+            logger.warn("FTX/FrogX positions failed", error);
             await ctx.reply(
                 "Positions are unavailable from FTX/FrogX right now.",
                 this.menuKeyboard()
@@ -1966,7 +1970,7 @@ export class TradingBot {
                 }
             }
         } catch (error) {
-            elizaLogger.warn(
+            logger.warn(
                 "FTX/FrogX position PNL unavailable; using balance",
                 error
             );
@@ -1999,7 +2003,7 @@ export class TradingBot {
                 }
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX position detail failed", error);
+            logger.warn("FTX/FrogX position detail failed", error);
         }
 
         await ctx.reply(
@@ -2137,7 +2141,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX PNL failed", error);
+            logger.warn("FTX/FrogX PNL failed", error);
             await ctx.reply(
                 "PNL is unavailable from FTX/FrogX right now.",
                 this.menuKeyboard()
@@ -2211,7 +2215,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX activity fetch failed", error);
+            logger.warn("FTX/FrogX activity fetch failed", error);
             await ctx.reply(
                 "Activity history is unavailable from FTX/FrogX right now."
             );
@@ -2308,7 +2312,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX token cleanup failed", error);
+            logger.warn("FTX/FrogX token cleanup failed", error);
             await ctx.reply(
                 "Token cleanup is unavailable from FTX/FrogX right now."
             );
@@ -2416,7 +2420,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX token safety failed", error);
+            logger.warn("FTX/FrogX token safety failed", error);
             await ctx.reply(
                 "Token safety is unavailable from FTX/FrogX right now."
             );
@@ -2503,7 +2507,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX market scan failed", error);
+            logger.warn("FTX/FrogX market scan failed", error);
             await ctx.reply(
                 "Market scan is unavailable from FTX/FrogX right now."
             );
@@ -2547,7 +2551,7 @@ export class TradingBot {
                 storageWarning = `FTX/FrogX order storage missing ${(stored.required ?? []).join(", ") || "required config"}. Showing Ribbot cache only.`;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX order list failed", error);
+            logger.warn("FTX/FrogX order list failed", error);
             storageWarning =
                 "FTX/FrogX order storage is unavailable right now. Showing Ribbot cache only.";
         }
@@ -2796,7 +2800,7 @@ export class TradingBot {
                         ? `all (${formatRawTokenAmount(amountIn, token.decimals)})`
                         : `${clampedPercent}% (${formatRawTokenAmount(amountIn, token.decimals)})`;
             } catch (error) {
-                elizaLogger.warn(
+                logger.warn(
                     "FTX/FrogX withdrawal position lookup failed",
                     error
                 );
@@ -2885,7 +2889,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX withdrawal validation failed", error);
+            logger.warn("FTX/FrogX withdrawal validation failed", error);
             await ctx.reply(
                 "FTX/FrogX could not validate this withdrawal. Ribbot did not store it."
             );
@@ -2961,7 +2965,7 @@ export class TradingBot {
                 inMint = mint;
                 outMint = SOL_MINT;
             } catch (error) {
-                elizaLogger.warn(
+                logger.warn(
                     "FTX/FrogX limit sell position lookup failed",
                     error
                 );
@@ -3185,7 +3189,7 @@ export class TradingBot {
                 amountLabel: `${percent}% (${formatRawTokenAmount(amountIn, token.decimals)})`,
             };
         } catch (error) {
-            elizaLogger.warn(
+            logger.warn(
                 `FTX/FrogX ${label.toLowerCase()} position lookup failed`,
                 error
             );
@@ -3275,7 +3279,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX order validation failed", error);
+            logger.warn("FTX/FrogX order validation failed", error);
             await ctx.reply(
                 "FTX/FrogX could not validate this order. Ribbot did not store it."
             );
@@ -3335,7 +3339,7 @@ export class TradingBot {
                 return;
             }
             if (cancelled.status === "not_configured") {
-                elizaLogger.warn(
+                logger.warn(
                     `FTX/FrogX order cancel missing ${(cancelled.required ?? []).join(", ")}`
                 );
                 await ctx.reply(
@@ -3344,7 +3348,7 @@ export class TradingBot {
                 return;
             }
             if (cancelled.status === "not_found") {
-                elizaLogger.warn(
+                logger.warn(
                     `FTX/FrogX order ${orderId} not found for cancellation`
                 );
                 await ctx.reply(
@@ -3363,7 +3367,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX order cancel failed", error);
+            logger.warn("FTX/FrogX order cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not confirm cancellation, so Ribbot left the order unchanged."
             );
@@ -3546,7 +3550,7 @@ export class TradingBot {
                 this.withdrawalExecutionKeyboard(ticket.id, false)
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX withdrawal execution failed", error);
+            logger.warn("FTX/FrogX withdrawal execution failed", error);
             this.store.markWithdrawalExecutionPending(user, ticket.id, {
                 status: "lookup_error",
                 checkedAt: new Date().toISOString(),
@@ -3684,10 +3688,7 @@ export class TradingBot {
                 this.withdrawalExecutionKeyboard(ticket.id, true)
             );
         } catch (error) {
-            elizaLogger.warn(
-                "FTX/FrogX withdrawal status lookup failed",
-                error
-            );
+            logger.warn("FTX/FrogX withdrawal status lookup failed", error);
             this.store.markWithdrawalExecutionPending(user, ticket.id, {
                 status: "lookup_error",
                 checkedAt: new Date().toISOString(),
@@ -3814,7 +3815,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade cancel failed", error);
+            logger.warn("FTX/FrogX copytrade cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not cancel this copy-trade config. Local cache was not changed."
             );
@@ -3931,7 +3932,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade status failed", error);
+            logger.warn("FTX/FrogX copytrade status failed", error);
             await ctx.reply(
                 [
                     "Copy-trade status lookup is unavailable.",
@@ -4009,7 +4010,7 @@ export class TradingBot {
             }
             await ctx.reply("Copy-trade config not found in FTX/FrogX.");
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade control failed", error);
+            logger.warn("FTX/FrogX copytrade control failed", error);
             await ctx.reply(
                 `FTX/FrogX could not ${action} this copy trade. Ribbot did not change local state.`
             );
@@ -4084,7 +4085,7 @@ export class TradingBot {
                 (config) => config.configId === intent.configId
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade edit lookup failed", error);
+            logger.warn("FTX/FrogX copytrade edit lookup failed", error);
             await ctx.reply(
                 "FTX/FrogX could not load the authoritative strategy. Ribbot did not edit local cache."
             );
@@ -4258,7 +4259,7 @@ export class TradingBot {
             }
             await ctx.reply("Copy-trade config not found in FTX/FrogX.");
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade update failed", error);
+            logger.warn("FTX/FrogX copytrade update failed", error);
             await ctx.reply(
                 "FTX/FrogX could not update this copy trade. Ribbot did not change local strategy fields."
             );
@@ -4334,7 +4335,7 @@ export class TradingBot {
                     .join("\n")
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade duplicate failed", error);
+            logger.warn("FTX/FrogX copytrade duplicate failed", error);
             await ctx.reply(
                 "FTX/FrogX could not duplicate this copy trade. Ribbot did not create a local-only strategy."
             );
@@ -4407,7 +4408,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX sniper cancel failed", error);
+            logger.warn("FTX/FrogX sniper cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not cancel this sniper config. Local cache was not changed."
             );
@@ -4524,7 +4525,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX sniper status failed", error);
+            logger.warn("FTX/FrogX sniper status failed", error);
             await ctx.reply(
                 [
                     "Sniper status lookup is unavailable.",
@@ -4603,7 +4604,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-buy cancel failed", error);
+            logger.warn("FTX/FrogX auto-buy cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not cancel this auto-buy rule. Local cache was not changed."
             );
@@ -4720,7 +4721,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-buy status failed", error);
+            logger.warn("FTX/FrogX auto-buy status failed", error);
             await ctx.reply(
                 [
                     "Auto-buy status lookup is unavailable.",
@@ -4795,7 +4796,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX bundle-buy cancel failed", error);
+            logger.warn("FTX/FrogX bundle-buy cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not cancel this bundle-buy basket. Local cache was not changed."
             );
@@ -4966,7 +4967,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX bundle-buy execution failed", error);
+            logger.warn("FTX/FrogX bundle-buy execution failed", error);
             if (cached) {
                 this.store.updateBundleBuyExecution(
                     user,
@@ -5138,10 +5139,7 @@ export class TradingBot {
                 this.bundleExecutionKeyboard(configId, true)
             );
         } catch (error) {
-            elizaLogger.warn(
-                "FTX/FrogX bundle-buy status lookup failed",
-                error
-            );
+            logger.warn("FTX/FrogX bundle-buy status lookup failed", error);
             await ctx.reply(
                 [
                     "Bundle-buy status lookup is unavailable.",
@@ -5223,7 +5221,7 @@ export class TradingBot {
                 return;
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-sell cancel failed", error);
+            logger.warn("FTX/FrogX auto-sell cancel failed", error);
             await ctx.reply(
                 "FTX/FrogX could not cancel this auto-sell rule. Local cache was not changed."
             );
@@ -5340,7 +5338,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-sell status failed", error);
+            logger.warn("FTX/FrogX auto-sell status failed", error);
             await ctx.reply(
                 [
                     "Auto-sell status lookup is unavailable.",
@@ -5441,7 +5439,7 @@ export class TradingBot {
                 ].join("\n")
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX preference validation failed", error);
+            logger.warn("FTX/FrogX preference validation failed", error);
             await ctx.reply(
                 "FTX/FrogX could not validate this settings change. Ribbot did not update settings."
             );
@@ -5503,10 +5501,7 @@ export class TradingBot {
                 ].join("\n")
             );
         } catch (error) {
-            elizaLogger.warn(
-                "FTX/FrogX token preference validation failed",
-                error
-            );
+            logger.warn("FTX/FrogX token preference validation failed", error);
             await ctx.reply(
                 "FTX/FrogX could not validate this token preference change. Ribbot did not update local state."
             );
@@ -5602,7 +5597,7 @@ export class TradingBot {
                 return this.store.syncAccountSnapshot(user, result.account);
             }
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX account sync failed", error);
+            logger.warn("FTX/FrogX account sync failed", error);
         }
 
         return user;
@@ -5730,7 +5725,7 @@ export class TradingBot {
             }
         } catch (error) {
             ftxListUnavailable = true;
-            elizaLogger.warn("FTX/FrogX copytrade list failed", error);
+            logger.warn("FTX/FrogX copytrade list failed", error);
         }
 
         if (configs.length === 0) {
@@ -5969,7 +5964,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX copytrade storage failed", error);
+            logger.warn("FTX/FrogX copytrade storage failed", error);
             await ctx.reply(
                 "FTX/FrogX could not store this copy-trade config. Ribbot did not store it."
             );
@@ -6005,7 +6000,7 @@ export class TradingBot {
             }
         } catch (error) {
             ftxListUnavailable = true;
-            elizaLogger.warn("FTX/FrogX sniper list failed", error);
+            logger.warn("FTX/FrogX sniper list failed", error);
         }
 
         if (configs.length === 0) {
@@ -6150,7 +6145,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX sniper storage failed", error);
+            logger.warn("FTX/FrogX sniper storage failed", error);
             await ctx.reply(
                 "FTX/FrogX could not store this sniper config. Ribbot did not store it."
             );
@@ -6192,7 +6187,7 @@ export class TradingBot {
             }
         } catch (error) {
             ftxListUnavailable = true;
-            elizaLogger.warn("FTX/FrogX auto-buy list failed", error);
+            logger.warn("FTX/FrogX auto-buy list failed", error);
         }
 
         if (configs.length === 0) {
@@ -6382,7 +6377,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-buy storage failed", error);
+            logger.warn("FTX/FrogX auto-buy storage failed", error);
             await ctx.reply(
                 "FTX/FrogX could not store this auto-buy rule. Ribbot did not store it."
             );
@@ -6420,7 +6415,7 @@ export class TradingBot {
             }
         } catch (error) {
             ftxListUnavailable = true;
-            elizaLogger.warn("FTX/FrogX bundle-buy list failed", error);
+            logger.warn("FTX/FrogX bundle-buy list failed", error);
         }
 
         if (configs.length === 0) {
@@ -6576,7 +6571,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX bundle-buy storage failed", error);
+            logger.warn("FTX/FrogX bundle-buy storage failed", error);
             await ctx.reply(
                 "FTX/FrogX could not store this multi-token basket. Ribbot did not store it."
             );
@@ -6614,7 +6609,7 @@ export class TradingBot {
             }
         } catch (error) {
             ftxListUnavailable = true;
-            elizaLogger.warn("FTX/FrogX auto-sell list failed", error);
+            logger.warn("FTX/FrogX auto-sell list failed", error);
         }
 
         if (configs.length === 0) {
@@ -6761,7 +6756,7 @@ export class TradingBot {
                 ])
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX auto-sell storage failed", error);
+            logger.warn("FTX/FrogX auto-sell storage failed", error);
             await ctx.reply(
                 "FTX/FrogX could not store this auto-sell rule. Ribbot did not store it."
             );
@@ -6927,14 +6922,9 @@ export class TradingBot {
                 amountIn: solToLamports(amountSol),
                 slippageBps: user.settings.slippageBps,
                 priorityFeeLamports: user.settings.priorityFeeLamports,
-                minLiquidityUsd:
-                    user.settings.instantAutoBuyMinLiquidityUsd,
-                maxMarketCapUsd:
-                    user.settings.instantAutoBuyMaxMarketCapUsd,
-                maxPriceImpactBps: Math.max(
-                    user.settings.slippageBps,
-                    1500
-                ),
+                minLiquidityUsd: user.settings.instantAutoBuyMinLiquidityUsd,
+                maxMarketCapUsd: user.settings.instantAutoBuyMaxMarketCapUsd,
+                maxPriceImpactBps: Math.max(user.settings.slippageBps, 1500),
             });
             if (review.status === "not_configured") {
                 await blocked(
@@ -6958,14 +6948,18 @@ export class TradingBot {
                 return;
             }
             if (!review.quoteProbe.executable) {
-                await blocked("FTX/FrogX could not produce an executable quote.");
+                await blocked(
+                    "FTX/FrogX could not produce an executable quote."
+                );
                 return;
             }
             if (
                 user.settings.instantAutoBuyMaxMarketCapUsd !== undefined &&
                 review.marketCap.withinLimit !== true
             ) {
-                await blocked("The configured market-cap limit could not be verified.");
+                await blocked(
+                    "The configured market-cap limit could not be verified."
+                );
                 return;
             }
 
@@ -6978,7 +6972,7 @@ export class TradingBot {
                 executionMode: "instant_auto_buy",
             });
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX Instant Auto Buy precheck failed", error);
+            logger.warn("FTX/FrogX Instant Auto Buy precheck failed", error);
             await blocked("Market-risk checks are temporarily unavailable.");
         }
     }
@@ -7098,7 +7092,7 @@ export class TradingBot {
                 amountIn,
             });
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX sell preview failed", error);
+            logger.warn("FTX/FrogX sell preview failed", error);
             await ctx.reply(
                 "Sell preview is unavailable from FTX/FrogX right now."
             );
@@ -7143,7 +7137,7 @@ export class TradingBot {
                 });
                 lines.push("", "FrogX quote", ...formatQuoteLines(quote));
             } catch (error) {
-                elizaLogger.warn("FrogX sell quote preview failed", error);
+                logger.warn("FrogX sell quote preview failed", error);
                 lines.push(
                     "",
                     "FrogX quote unavailable right now. No transaction was sent."
@@ -7274,7 +7268,7 @@ export class TradingBot {
                     });
                     lines.push("", "FrogX quote", ...formatQuoteLines(quote));
                 } catch (error) {
-                    elizaLogger.warn("FrogX quote preview failed", error);
+                    logger.warn("FrogX quote preview failed", error);
                     lines.push(
                         "",
                         "FrogX quote unavailable right now. No transaction was sent."
@@ -7579,7 +7573,7 @@ export class TradingBot {
                 this.orderExecutionKeyboard(order.id, false)
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX swap execution failed", error);
+            logger.warn("FTX/FrogX swap execution failed", error);
             this.store.markExecutionPending(user, order.id, {
                 status: "lookup_error",
                 checkedAt: new Date().toISOString(),
@@ -7708,7 +7702,7 @@ export class TradingBot {
                 this.orderExecutionKeyboard(order.id, true)
             );
         } catch (error) {
-            elizaLogger.warn("FTX/FrogX swap status lookup failed", error);
+            logger.warn("FTX/FrogX swap status lookup failed", error);
             this.store.markExecutionPending(user, order.id, {
                 status: "lookup_error",
                 checkedAt: new Date().toISOString(),

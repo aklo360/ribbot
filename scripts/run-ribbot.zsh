@@ -28,4 +28,11 @@ export RIBBOT_TRADING_DRY_RUN="${RIBBOT_TRADING_DRY_RUN:-true}"
 
 cd "$PROJECT_DIR"
 
-exec corepack pnpm start --characters characters/ribbot.character.json
+STANDALONE_ENTRY="$PROJECT_DIR/packages/client-telegram/dist-standalone/standalone.js"
+if [[ ! -f "$STANDALONE_ENTRY" ]]; then
+  print -u2 "Standalone Ribbot build is missing: $STANDALONE_ENTRY"
+  print -u2 "Run the client-telegram standalone build before starting the service."
+  exit 1
+fi
+
+exec node "$STANDALONE_ENTRY" "$@"

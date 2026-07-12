@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Replaced the production Ribbot launcher with a standalone Telegraf runtime that uses the existing deterministic FTX-routed trading module. The service no longer starts the obsolete Eliza agent, and startup fails closed when the Telegram token, FTX bot token, or trading-command gate is missing.
 - Telegram market scans and Instant Auto Buy blocks now distinguish a missing/unavailable FTX Titan quote probe from a safety result. Messages explicitly state that liquidity and price impact were not verified and that the result is not a safety pass, instead of exposing a vague `not_configured` status.
 - Copytrade, auto-buy, auto-sell, and sniper cancellation conflicts now normalize FTX `409` responses as locked state instead of reporting a generic backend failure. Local cache cancellation also refuses `executing` or `executed` advanced configs.
 - Advanced configs no longer disappear from Telegram while FTX is reconciling an ambiguous Privy response; non-cancelled executing, failed, and executed rows remain visible.
