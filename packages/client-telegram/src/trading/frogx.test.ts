@@ -14,6 +14,7 @@ import {
     fetchAutoBuyExecutionStatus,
     fetchAutoSellExecutionStatus,
     fetchCopyTradeExecutionStatus,
+    fetchNftHoldings,
     fetchPnl,
     fetchSniperExecutionStatus,
     fetchStoredBundleBuyExecutionStatus,
@@ -884,6 +885,53 @@ describe("FTX PNL client", () => {
                 confirmedFillCount: 2,
                 estimatedFillCount: 1,
             },
+        });
+    });
+});
+
+describe("FTX NFT holdings client", () => {
+    it("requests the Telegram account's active wallet through authenticated FTX", async () => {
+        globalThis.fetch = vi.fn(async (input, init) => {
+            expect(String(input)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/nfts?telegramUserId=123456&page=2&limit=5"
+            );
+            expect(new Headers(init?.headers).get("Authorization")).toBe(
+                "Bearer ribbot-token"
+            );
+            return Response.json({
+                status: "ready",
+                walletAddress: "So11111111111111111111111111111111111111112",
+                page: 2,
+                limit: 5,
+                total: 6,
+                items: [
+                    {
+                        mint: "frog-mint-6",
+                        name: "Solana Business Frog #6",
+                        description: null,
+                        image: "https://images.example/frog-6.png",
+                        collection: "frog-collection",
+                        owner: "So11111111111111111111111111111111111111112",
+                        compressed: true,
+                        attributes: [],
+                    },
+                ],
+            });
+        });
+
+        const result = await fetchNftHoldings({
+            frogxApiBaseUrl: "https://frogx.example/",
+            ftxApiToken: "ribbot-token",
+            telegramUserId: "123456",
+            page: 2,
+            limit: 5,
+        });
+
+        expect(result).toMatchObject({
+            status: "ready",
+            page: 2,
+            total: 6,
+            items: [{ mint: "frog-mint-6", compressed: true }],
         });
     });
 });

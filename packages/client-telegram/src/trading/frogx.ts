@@ -71,6 +71,40 @@ export type PnlInput = {
     telegramUserId: string;
 };
 
+export type NftHolding = {
+    mint: string;
+    name: string;
+    description: string | null;
+    image: string | null;
+    collection: string | null;
+    owner: string;
+    compressed: boolean;
+    attributes: Array<{ traitType: string; value: string | number }>;
+};
+
+export type NftHoldingsInput = {
+    frogxApiBaseUrl: string;
+    ftxApiToken?: string;
+    telegramUserId: string;
+    page?: number;
+    limit?: number;
+};
+
+export type NftHoldingsResult =
+    | {
+          status: "ready";
+          walletAddress: string;
+          items: NftHolding[];
+          page: number;
+          limit: number;
+          total: number;
+      }
+    | {
+          status: "wallet_required" | "not_configured" | "unavailable";
+          error?: string;
+          required?: string[];
+      };
+
 export type TokenCleanupInput = {
     frogxApiBaseUrl: string;
     ftxApiToken?: string;
@@ -3761,6 +3795,38 @@ export async function fetchPnl(input: PnlInput): Promise<PnlResult> {
     }
 
     return (await response.json()) as PnlResult;
+}
+
+export async function fetchNftHoldings(
+    input: NftHoldingsInput
+): Promise<NftHoldingsResult> {
+    const headers: Record<string, string> = {};
+    if (input.ftxApiToken) {
+        headers.Authorization = `Bearer ${input.ftxApiToken}`;
+    }
+
+    const params = new URLSearchParams({
+        telegramUserId: input.telegramUserId,
+        page: String(input.page ?? 1),
+        limit: String(input.limit ?? 5),
+    });
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/nfts?${params.toString()}`,
+        { headers }
+    );
+
+    if (
+        !response.ok &&
+        response.status !== 503 &&
+        response.status !== 502 &&
+        response.status !== 404
+    ) {
+        throw new Error(
+            `FrogX NFT holdings failed with status ${response.status}`
+        );
+    }
+
+    return (await response.json()) as NftHoldingsResult;
 }
 
 export async function fetchBuyQuote(input: BuyQuoteInput): Promise<FrogxQuote> {

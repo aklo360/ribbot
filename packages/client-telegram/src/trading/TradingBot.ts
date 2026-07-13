@@ -56,6 +56,7 @@ import {
     fetchActivity,
     fetchSwapExecutionStatus,
     fetchMarketRisk,
+    fetchNftHoldings,
     fetchBuyQuote,
     fetchAutoBuyConfigs,
     fetchAutoBuyExecutionStatus,
@@ -81,6 +82,7 @@ import {
     type BundleBuyExecutionItem,
     type DirectExecutionStatusResult,
     type MarketRiskQuoteProbe,
+    type NftHolding,
     type PositionToken,
     type PnlToken,
     type ScheduledOrderKind,
@@ -146,6 +148,7 @@ type ParsedIntent =
           values?: string[];
       }
     | { kind: "positions"; mint?: string; page?: number }
+    | { kind: "nfts"; page?: number }
     | { kind: "pnl" }
     | { kind: "cleanup" }
     | { kind: "safety"; mint?: string }
@@ -317,6 +320,9 @@ export class TradingBot {
                     await this.replyPositions(ctx, user, intent.page);
                 }
                 return true;
+            case "nfts":
+                await this.replyNftHoldings(ctx, user, intent.page);
+                return true;
             case "pnl":
                 await this.replyPnl(ctx, user);
                 return true;
@@ -459,6 +465,15 @@ export class TradingBot {
 
         if (action === "positions") {
             await this.replyPositions(
+                ctx,
+                user,
+                parsePositionPageIndex(rest[0])
+            );
+            return true;
+        }
+
+        if (action === "nfts") {
+            await this.replyNftHoldings(
                 ctx,
                 user,
                 parsePositionPageIndex(rest[0])
@@ -806,6 +821,16 @@ export class TradingBot {
                         : 0,
             };
         }
+        if (["/nfts", "/collectibles", "/frogs"].includes(command)) {
+            const pageValue = Number(args[0]);
+            return {
+                kind: "nfts",
+                page:
+                    Number.isInteger(pageValue) && pageValue > 0
+                        ? pageValue - 1
+                        : 0,
+            };
+        }
         if (["/pnl", "/profit", "/profits"].includes(command)) {
             return { kind: "pnl" };
         }
@@ -982,18 +1007,21 @@ export class TradingBot {
                           ),
                       ],
                       [
+                          Markup.button.callback("NFTs", "ribbot:nfts:0"),
                           Markup.button.callback("PNL", "ribbot:pnl"),
+                      ],
+                      [
                           Markup.button.callback(
                               "Watchlist",
                               "ribbot:watchlist"
                           ),
-                      ],
-                      [
                           Markup.button.callback("Activity", "ribbot:activity"),
-                          Markup.button.callback("Settings", "ribbot:settings"),
                       ],
                       [
+                          Markup.button.callback("Settings", "ribbot:settings"),
                           Markup.button.callback("Account", "ribbot:account"),
+                      ],
+                      [
                           Markup.button.callback(
                               "Withdrawals",
                               "ribbot:withdrawals"
@@ -1014,10 +1042,10 @@ export class TradingBot {
                               "Positions",
                               "ribbot:positions"
                           ),
-                          Markup.button.callback("PNL", "ribbot:pnl"),
+                          Markup.button.callback("NFTs", "ribbot:nfts:0"),
                       ],
                       [
-                          Markup.button.callback("Activity", "ribbot:activity"),
+                          Markup.button.callback("PNL", "ribbot:pnl"),
                           Markup.button.callback("Cleanup", "ribbot:cleanup"),
                       ],
                       [
@@ -1726,6 +1754,136 @@ export class TradingBot {
         }
 
         await this.applySettingsPreference(ctx, user, update);
+    }
+
+    private async replyNftHoldings(
+        ctx: Context,
+        user: TradingUser,
+        requestedPage = 0
+    ): Promise<void> {
+        try {
+            const holdings = await fetchNftHoldings({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+                page: Math.max(0, requestedPage) + 1,
+                limit: 5,
+            });
+
+            if (holdings.status !== "ready") {
+                if (holdings.status === "not_configured") {
+                    await ctx.reply(
+                        [
+                            "FTX/FrogX NFT holdings are not configured yet.",
+                            `Missing: ${(holdings.required ?? []).join(", ") || "unknown"}`,
+                        ].join("\n"),
+                        this.menuKeyboard()
+                    );
+                } else if (holdings.status === "wallet_required") {
+                    await ctx.reply(
+                        "No active FTX wallet is linked for this Telegram account. Run /wallet first.",
+                        this.linkWalletKeyboard()
+                    );
+                } else {
+                    await ctx.reply(
+                        holdings.error ??
+                            "NFT holdings are unavailable from FTX/FrogX right now.",
+                        this.menuKeyboard()
+                    );
+                }
+                return;
+            }
+
+            const totalPages = Math.max(
+                1,
+                Math.ceil(Math.max(holdings.total, 1) / holdings.limit)
+            );
+            const pageIndex = Math.max(0, holdings.page - 1);
+            if (holdings.total > 0 && pageIndex >= totalPages) {
+                await this.replyNftHoldings(ctx, user, totalPages - 1);
+                return;
+            }
+
+            const itemLines =
+                holdings.items.length > 0
+                    ? holdings.items.flatMap((nft, index) =>
+                          this.nftHoldingLines(
+                              nft,
+                              pageIndex * holdings.limit + index + 1
+                          )
+                      )
+                    : ["No NFTs are held by this active wallet."];
+            const navigationButtons = [
+                ...(pageIndex > 0
+                    ? [
+                          Markup.button.callback(
+                              "Prev",
+                              `ribbot:nfts:${pageIndex - 1}`
+                          ),
+                      ]
+                    : []),
+                ...(pageIndex < totalPages - 1
+                    ? [
+                          Markup.button.callback(
+                              "Next",
+                              `ribbot:nfts:${pageIndex + 1}`
+                          ),
+                      ]
+                    : []),
+            ];
+            const keyboard = Markup.inlineKeyboard([
+                ...(navigationButtons.length ? [navigationButtons] : []),
+                [
+                    Markup.button.callback(
+                        "Refresh",
+                        `ribbot:nfts:${pageIndex}`
+                    ),
+                    Markup.button.callback("Wallet", "ribbot:wallet"),
+                ],
+                [Markup.button.callback("Menu", "ribbot:menu")],
+            ]);
+            const text = [
+                `NFT Holdings · ${pageIndex + 1}/${totalPages}`,
+                `Wallet: ${shortAddress(holdings.walletAddress)}`,
+                `Total: ${holdings.total}`,
+                "",
+                ...itemLines,
+            ].join("\n");
+            const previewImage = holdings.items.find((nft) => nft.image)?.image;
+
+            if (previewImage) {
+                try {
+                    await ctx.replyWithPhoto(
+                        { url: previewImage },
+                        { caption: text, ...keyboard }
+                    );
+                    return;
+                } catch (error) {
+                    logger.warn(
+                        "Telegram rejected the NFT preview image; using text",
+                        error
+                    );
+                }
+            }
+
+            await ctx.reply(text, keyboard);
+        } catch (error) {
+            logger.warn("FTX/FrogX NFT holdings failed", error);
+            await ctx.reply(
+                "NFT holdings are unavailable from FTX/FrogX right now.",
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private nftHoldingLines(nft: NftHolding, index: number): string[] {
+        const rawName = nft.name.trim() || "Untitled NFT";
+        const name =
+            rawName.length > 48 ? `${rawName.slice(0, 45)}...` : rawName;
+        return [
+            `${index}. ${name}`,
+            `   ${shortAddress(nft.mint)}${nft.compressed ? " · compressed" : ""}`,
+        ];
     }
 
     private async replyPositions(
@@ -6777,6 +6935,7 @@ export class TradingBot {
                 "/buy <mint> <SOL> - create a buy ticket",
                 "/sell <mint> <percent> - create a sell ticket",
                 "/positions [page] - paginated holdings and trade actions",
+                "/nfts [page] - NFTs held by the active FTX wallet",
                 "/position <mint> - open one position",
                 "/pnl - PNL and fill coverage",
                 "/activity - recent FTX account events",
