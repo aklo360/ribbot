@@ -841,6 +841,9 @@ describe("FTX PNL client", () => {
             return Response.json({
                 status: "ready",
                 walletAddress: "So11111111111111111111111111111111111111112",
+                walletAddresses: [
+                    "So11111111111111111111111111111111111111112",
+                ],
                 generatedAt: "2026-07-10T12:00:00.000Z",
                 pricing: { source: "jupiter-price-v3", pricedMints: 1 },
                 executionAccounting: {

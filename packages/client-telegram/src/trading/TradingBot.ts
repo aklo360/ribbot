@@ -1843,8 +1843,8 @@ export class TradingBot {
                 [Markup.button.callback("Menu", "ribbot:menu")],
             ]);
             const text = [
-                `NFT Holdings · ${pageIndex + 1}/${totalPages}`,
-                `Wallet: ${shortAddress(holdings.walletAddress)}`,
+                `Solana Business Frogs · ${pageIndex + 1}/${totalPages}`,
+                `Embedded wallets: ${holdings.walletAddresses.length}`,
                 `Total: ${holdings.total}`,
                 "",
                 ...itemLines,
@@ -1882,7 +1882,7 @@ export class TradingBot {
             rawName.length > 48 ? `${rawName.slice(0, 45)}...` : rawName;
         return [
             `${index}. ${name}`,
-            `   ${shortAddress(nft.mint)}${nft.compressed ? " · compressed" : ""}`,
+            `   ${shortAddress(nft.mint)} · wallet ${shortAddress(nft.owner)}${nft.compressed ? " · compressed" : ""}`,
         ];
     }
 

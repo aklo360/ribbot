@@ -12,8 +12,8 @@ if the standalone build is missing.
 ## Boundaries
 
 - Telegram command parsing, menus, callbacks, and non-secret cache: Ribbot.
-- NFT presentation and pagination: Ribbot; active-wallet selection, ownership
-  lookup, filtering, and normalized metadata: authenticated FTX API.
+- Business Frog presentation and pagination: Ribbot; embedded-wallet aggregation,
+  collection filtering, ownership lookup, and normalized metadata: FTX API.
 - Wallet inventory/provisioning, account state, quote/risk checks, order and
   automation storage, signing, reconciliation, and execution: FTX/FrogX Worker.
 - Privy credentials and authorization signer: encrypted FTX Worker secrets.

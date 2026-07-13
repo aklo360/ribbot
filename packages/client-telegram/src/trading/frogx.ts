@@ -94,6 +94,7 @@ export type NftHoldingsResult =
     | {
           status: "ready";
           walletAddress: string;
+          walletAddresses: string[];
           items: NftHolding[];
           page: number;
           limit: number;
