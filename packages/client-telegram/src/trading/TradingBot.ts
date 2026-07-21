@@ -7,6 +7,11 @@ import {
 import { logger } from "./logger.ts";
 import { ActivityAlertPoller } from "./activityAlerts.ts";
 import {
+    AlphaSignalPoller,
+    formatRobinhoodAlphaOverview,
+    parseAlphaCommandAction,
+} from "./alphaSignals.ts";
+import {
     parseAutoBuyIntent,
     type AutoBuyCommandIntent,
 } from "./autoBuyCommand.ts";
@@ -54,6 +59,7 @@ import {
     executeStoredBundleBuyConfig,
     executeWithdrawal,
     fetchActivity,
+    fetchRobinhoodAlphaSignals,
     fetchSwapExecutionStatus,
     fetchMarketRisk,
     fetchNftHoldings,
@@ -128,6 +134,7 @@ type ParsedIntent =
     | { kind: "control" }
     | { kind: "referral"; action?: "show" | "apply"; referralCode?: string }
     | { kind: "activity" }
+    | { kind: "alpha"; action: "show" | "on" | "off" | "status" }
     | {
           kind: "settings";
           field?:
@@ -229,6 +236,7 @@ export class TradingBot {
     private readonly config: TradingConfig;
     private readonly store: TradingStateStore;
     private readonly activityAlertPoller: ActivityAlertPoller;
+    private readonly alphaSignalPoller: AlphaSignalPoller;
 
     constructor(bot: Telegraf<Context>, runtime: SettingsSource) {
         this.bot = bot;
@@ -257,6 +265,29 @@ export class TradingBot {
                     ])
                 ),
         });
+        this.alphaSignalPoller = new AlphaSignalPoller({
+            enabled: this.config.alphaAlertsEnabled,
+            tgTrader: this.config.tgTrader,
+            frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+            ftxApiToken: this.config.ftxApiToken,
+            pollIntervalMs: this.config.alphaAlertPollIntervalMs,
+            maxUsersPerPoll: this.config.alphaAlertMaxUsersPerPoll,
+            maxSignalsPerMessage: this.config.alphaAlertMaxSignalsPerMessage,
+            store: this.store,
+            logger: {
+                info: (...values) => logger.info(...values),
+                warn: (...values) => logger.warn(...values),
+            },
+            sendMessage: (telegramUserId, text) =>
+                this.bot.telegram.sendMessage(
+                    telegramUserId,
+                    text,
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback("Alpha", "ribbot:alpha")],
+                        [Markup.button.callback("Menu", "ribbot:menu")],
+                    ])
+                ),
+        });
     }
 
     isEnabled(): boolean {
@@ -264,11 +295,16 @@ export class TradingBot {
     }
 
     startActivityAlerts(): boolean {
-        return this.activityAlertPoller.start();
+        const activityStarted = this.activityAlertPoller.start();
+        const alphaStarted = this.alphaSignalPoller.start();
+        return activityStarted || alphaStarted;
     }
 
     async stopActivityAlerts(): Promise<void> {
-        await this.activityAlertPoller.stop();
+        await Promise.all([
+            this.activityAlertPoller.stop(),
+            this.alphaSignalPoller.stop(),
+        ]);
     }
 
     async handleMessage(ctx: Context): Promise<boolean> {
@@ -304,6 +340,9 @@ export class TradingBot {
                 return true;
             case "activity":
                 await this.replyActivity(ctx, user);
+                return true;
+            case "alpha":
+                await this.replyAlpha(ctx, user, intent.action);
                 return true;
             case "settings":
                 await this.replySettings(ctx, user, intent);
@@ -455,6 +494,20 @@ export class TradingBot {
 
         if (action === "activity") {
             await this.replyActivity(ctx, user);
+            return true;
+        }
+
+        if (action === "alpha") {
+            await this.replyAlpha(ctx, user, "show");
+            return true;
+        }
+
+        if (action === "alpha-on" || action === "alpha-off") {
+            await this.replyAlpha(
+                ctx,
+                user,
+                action === "alpha-on" ? "on" : "off"
+            );
             return true;
         }
 
@@ -808,6 +861,13 @@ export class TradingBot {
         if (["/activity", "/history", "/trades", "/events"].includes(command)) {
             return { kind: "activity" };
         }
+        if (["/alpha", "/signals", "/hoodalpha"].includes(command)) {
+            const action = args[0]?.toLowerCase();
+            return {
+                kind: "alpha",
+                action: parseAlphaCommandAction(action),
+            };
+        }
         if (command === "/settings") return parseSettingsIntent(args);
         if (["/positions", "/position"].includes(command)) {
             const mint = findMint(args);
@@ -1017,6 +1077,7 @@ export class TradingBot {
                           ),
                           Markup.button.callback("Activity", "ribbot:activity"),
                       ],
+                      [Markup.button.callback("Robinhood Alpha", "ribbot:alpha")],
                       [
                           Markup.button.callback("Settings", "ribbot:settings"),
                           Markup.button.callback("Account", "ribbot:account"),
@@ -1051,6 +1112,13 @@ export class TradingBot {
                       [
                           Markup.button.callback("Orders", "ribbot:orders"),
                           Markup.button.callback("Rewards", "ribbot:referrals"),
+                      ],
+                      [
+                          Markup.button.callback(
+                              "Robinhood Alpha",
+                              "ribbot:alpha"
+                          ),
+                          Markup.button.callback("Activity", "ribbot:activity"),
                       ],
                       [
                           Markup.button.callback(
@@ -2376,6 +2444,73 @@ export class TradingBot {
             logger.warn("FTX/FrogX activity fetch failed", error);
             await ctx.reply(
                 "Activity history is unavailable from FTX/FrogX right now."
+            );
+        }
+    }
+
+    private async replyAlpha(
+        ctx: Context,
+        user: TradingUser,
+        action: "show" | "on" | "off" | "status"
+    ): Promise<void> {
+        let currentUser = user;
+        let transition: string | undefined;
+        if (action === "on") {
+            currentUser = this.store.setAlphaSignalsEnabled(user, true);
+            transition = this.config.alphaAlertsEnabled
+                ? "Proactive Robinhood Chain alpha alerts are on for this chat. Existing signals will be baselined before new alerts are delivered."
+                : "Alpha alert opt-in saved. The operator delivery gate is still off, so no proactive Telegram message will be sent yet.";
+        } else if (action === "off") {
+            currentUser = this.store.setAlphaSignalsEnabled(user, false);
+            transition =
+                "Proactive Robinhood Chain alpha alerts are off for this chat.";
+        }
+
+        try {
+            const result = await fetchRobinhoodAlphaSignals({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+            });
+            await ctx.reply(
+                [
+                    transition,
+                    transition ? "" : undefined,
+                    formatRobinhoodAlphaOverview(
+                        result,
+                        Boolean(currentUser.alphaSignalsEnabled),
+                        this.config.alphaAlertsEnabled
+                    ),
+                ]
+                    .filter(Boolean)
+                    .join("\n"),
+                Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback("Refresh", "ribbot:alpha"),
+                        currentUser.alphaSignalsEnabled
+                            ? Markup.button.callback(
+                                  "Alerts Off",
+                                  "ribbot:alpha-off"
+                              )
+                            : Markup.button.callback(
+                                  "Alerts On",
+                                  "ribbot:alpha-on"
+                              ),
+                    ],
+                    [Markup.button.callback("Menu", "ribbot:menu")],
+                ])
+            );
+        } catch (error) {
+            logger.warn("FTX/FrogX Robinhood alpha fetch failed", error);
+            await ctx.reply(
+                [
+                    transition,
+                    transition ? "" : undefined,
+                    "Robinhood Chain alpha signals are unavailable from FTX/FrogX right now.",
+                    "No trade or chain transaction was attempted.",
+                ]
+                    .filter(Boolean)
+                    .join("\n"),
+                this.menuKeyboard()
             );
         }
     }
@@ -6939,6 +7074,8 @@ export class TradingBot {
                 "/position <mint> - open one position",
                 "/pnl - PNL and fill coverage",
                 "/activity - recent FTX account events",
+                "/alpha - latest Robinhood Chain profitable-wallet signals",
+                "/alpha on|off - opt into or out of proactive alpha alerts",
                 "/cleanup - review dust, hidden, and unpriced token positions",
                 "/safety <mint> - review mint/freeze authority and price signals",
                 "/scan <mint> [SOL] - review safety, market cap, and quote impact",

@@ -407,6 +407,8 @@ export type ActivityAlertCursor = {
     nextAttemptAt?: string;
 };
 
+export type AlphaSignalCursor = ActivityAlertCursor;
+
 export type TradingAccountWallet = {
     walletId: string;
     label: string;
@@ -446,6 +448,8 @@ export type TradingUser = {
     bundleBuyConfigs?: Record<string, BundleBuyConfig>;
     autoSellConfigs?: Record<string, AutoSellConfig>;
     activityAlertCursor?: ActivityAlertCursor;
+    alphaSignalsEnabled?: boolean;
+    alphaSignalCursor?: AlphaSignalCursor;
     settings: TradingUserSettings;
 };
 
@@ -598,6 +602,17 @@ export class TradingStateStore {
                         existing.activityAlertCursor.consecutiveFailures
                     );
             }
+            existing.alphaSignalsEnabled ??= false;
+            if (existing.alphaSignalCursor) {
+                existing.alphaSignalCursor.seenEventIds =
+                    cleanActivityAlertEventIds(
+                        existing.alphaSignalCursor.seenEventIds
+                    );
+                existing.alphaSignalCursor.consecutiveFailures =
+                    cleanNonNegativeInteger(
+                        existing.alphaSignalCursor.consecutiveFailures
+                    );
+            }
             existing.settings ??= {
                 botMode: "advanced",
                 confirmTrades: defaults.confirmTrades,
@@ -657,6 +672,7 @@ export class TradingStateStore {
             autoBuyConfigs: {},
             bundleBuyConfigs: {},
             autoSellConfigs: {},
+            alphaSignalsEnabled: false,
             settings: {
                 botMode: "advanced",
                 confirmTrades: defaults.confirmTrades,
@@ -1660,6 +1676,107 @@ export class TradingStateStore {
         return Object.values(this.load().users).sort((a, b) =>
             a.telegramUserId.localeCompare(b.telegramUserId)
         );
+    }
+
+    setAlphaSignalsEnabled(
+        user: TradingUser,
+        enabled: boolean
+    ): TradingUser {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        current.alphaSignalsEnabled = enabled;
+        if (!enabled) delete current.alphaSignalCursor;
+        current.updatedAt = new Date().toISOString();
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return current;
+    }
+
+    getAlphaSignalCursor(user: TradingUser): AlphaSignalCursor | undefined {
+        const current = this.load().users[user.telegramUserId] || user;
+        return current.alphaSignalCursor;
+    }
+
+    initializeAlphaSignalCursor(
+        user: TradingUser,
+        signalIds: string[],
+        initializedAt: string
+    ): AlphaSignalCursor {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        if (current.alphaSignalCursor) return current.alphaSignalCursor;
+        current.alphaSignalCursor = {
+            initializedAt,
+            seenEventIds: cleanActivityAlertEventIds(signalIds),
+        };
+        current.updatedAt = initializedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return current.alphaSignalCursor;
+    }
+
+    markAlphaSignalsDelivered(
+        user: TradingUser,
+        signalIds: string[],
+        deliveredAt: string
+    ): AlphaSignalCursor {
+        return this.updateAlphaSignalCursor(user, signalIds, deliveredAt, {
+            lastDeliveredAt: deliveredAt,
+            consecutiveFailures: 0,
+        });
+    }
+
+    markAlphaSignalDeliveryFailed(
+        user: TradingUser,
+        failedAt: string,
+        nextAttemptAt: string
+    ): AlphaSignalCursor {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        const cursor = current.alphaSignalCursor ?? {
+            initializedAt: failedAt,
+            seenEventIds: [],
+        };
+        cursor.consecutiveFailures = (cursor.consecutiveFailures ?? 0) + 1;
+        cursor.lastFailureAt = failedAt;
+        cursor.nextAttemptAt = nextAttemptAt;
+        current.alphaSignalCursor = cursor;
+        current.updatedAt = failedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return cursor;
+    }
+
+    private updateAlphaSignalCursor(
+        user: TradingUser,
+        signalIds: string[],
+        updatedAt: string,
+        delivery?: {
+            lastDeliveredAt: string;
+            consecutiveFailures: number;
+        }
+    ): AlphaSignalCursor {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        const cursor = current.alphaSignalCursor ?? {
+            initializedAt: updatedAt,
+            seenEventIds: [],
+        };
+        cursor.seenEventIds = cleanActivityAlertEventIds([
+            ...signalIds,
+            ...cursor.seenEventIds,
+        ]);
+        if (delivery) {
+            cursor.lastDeliveredAt = delivery.lastDeliveredAt;
+            cursor.consecutiveFailures = delivery.consecutiveFailures;
+            delete cursor.lastFailureAt;
+            delete cursor.nextAttemptAt;
+        }
+        current.alphaSignalCursor = cursor;
+        current.updatedAt = updatedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return cursor;
     }
 
     getActivityAlertCursor(user: TradingUser): ActivityAlertCursor | undefined {

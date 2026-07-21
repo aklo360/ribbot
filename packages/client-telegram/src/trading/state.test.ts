@@ -444,3 +444,25 @@ describe("advanced automation execution cache state", () => {
         );
     });
 });
+
+describe("Robinhood alpha alert state", () => {
+    it("defaults to opt-out, persists opt-in, and clears the cursor on opt-out", () => {
+        const { store, user } = createStore();
+        expect(user.alphaSignalsEnabled).toBe(false);
+
+        const enabled = store.setAlphaSignalsEnabled(user, true);
+        expect(enabled.alphaSignalsEnabled).toBe(true);
+        store.initializeAlphaSignalCursor(
+            enabled,
+            ["robinhood:token:1"],
+            "2026-07-21T03:00:00.000Z"
+        );
+        expect(store.getAlphaSignalCursor(enabled)?.seenEventIds).toEqual([
+            "robinhood:token:1",
+        ]);
+
+        const disabled = store.setAlphaSignalsEnabled(enabled, false);
+        expect(disabled.alphaSignalsEnabled).toBe(false);
+        expect(store.getAlphaSignalCursor(disabled)).toBeUndefined();
+    });
+});
