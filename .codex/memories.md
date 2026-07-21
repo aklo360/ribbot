@@ -21,7 +21,9 @@ preference. The lifecycle-owned poller baselines existing signals and advances a
 durable exactly-once cursor only after successful Telegram delivery. FTX owns
 market ingestion, wallet scoring, global roster/signal state, and the 30-day
 window; Ribbot owns presentation and delivery only. Keep
-`RIBBOT_ALPHA_ALERTS_ENABLED=false` without explicit activation approval.
+`RIBBOT_ALPHA_ALERTS_ENABLED=false` without explicit activation approval. AKLO
+approved the production override on 2026-07-20; the Mini LaunchAgent is live,
+one user is opted in and baselined, and checked-in defaults remain false.
 
 Production credential aliases are resolved by the runner. Ribbot-side trading
 defaults to disabled and dry-run. FTX live execution and monitor gates are also
