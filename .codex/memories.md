@@ -15,6 +15,14 @@ across every stored embedded Privy wallet through authenticated FTX. Ribbot send
 Telegram ID and pagination only; FTX owns wallet aggregation and the collection-
 filtered DAS lookup. Menu buttons expose the view in both modes.
 
+`/alpha` plus `/signals` and `/hoodalpha` render FTX's read-only Robinhood Chain
+scanner snapshot. `/alpha on|off|status` controls a default-off per-user alert
+preference. The lifecycle-owned poller baselines existing signals and advances a
+durable exactly-once cursor only after successful Telegram delivery. FTX owns
+market ingestion, wallet scoring, global roster/signal state, and the 30-day
+window; Ribbot owns presentation and delivery only. Keep
+`RIBBOT_ALPHA_ALERTS_ENABLED=false` without explicit activation approval.
+
 Production credential aliases are resolved by the runner. Ribbot-side trading
 defaults to disabled and dry-run. FTX live execution and monitor gates are also
 disabled. Do not change either set of gates without explicit approval.

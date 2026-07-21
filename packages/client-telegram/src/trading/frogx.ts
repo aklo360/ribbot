@@ -477,6 +477,78 @@ export type ActivityInput = {
     limit?: number;
 };
 
+export type RobinhoodAlphaWalletScore = {
+    walletAddress: string;
+    score: number;
+    tokenCount: number;
+    winningTokenCount: number;
+    winRate: number;
+    estimatedPnlUsd: number;
+    averageReturnPct: number;
+    sprayRatio: number;
+    copyOverlapRatio: number;
+    lastBuyAt: string;
+    explorerUrl: string;
+};
+
+export type RobinhoodAlphaSignal = {
+    signalId: string;
+    tokenAddress: string;
+    tokenName: string;
+    tokenSymbol: string;
+    poolAddress: string;
+    detectedAt: string;
+    windowMinutes: number;
+    qualifiedWalletCount: number;
+    qualifiedWallets: string[];
+    rosterAverageScore: number;
+    priceUsd: number;
+    liquidityUsd: number;
+    volume24hUsd: number;
+    poolAgeMinutes: number;
+    provisional: boolean;
+    geckoUrl: string;
+    explorerUrl: string;
+    disclaimer: string;
+};
+
+export type RobinhoodAlphaResult =
+    | {
+          status: "not_configured";
+          required?: string[];
+      }
+    | {
+          status: "not_ready";
+          chain: "robinhood";
+          chainId: 4663;
+          scannerEnabled: boolean;
+          warnings: string[];
+      }
+    | {
+          status: "ready" | "provisional";
+          chain: "robinhood";
+          chainId: 4663;
+          generatedAt: string;
+          nextScanAt: string;
+          observedHistoryDays: number;
+          summary: {
+              runnerPools: number;
+              observedTrades: number;
+              candidateWallets: number;
+              rosterWallets: number;
+              recentSignals: number;
+          };
+          roster: RobinhoodAlphaWalletScore[];
+          signals: RobinhoodAlphaSignal[];
+          warnings: string[];
+          lastError?: string;
+      };
+
+export type RobinhoodAlphaInput = {
+    frogxApiBaseUrl: string;
+    ftxApiToken?: string;
+};
+
 export type ReferralSummary = {
     telegramUserId: string;
     referralCode: string;
@@ -1884,6 +1956,26 @@ export async function fetchActivity(
     }
 
     return (await response.json()) as ActivityResult;
+}
+
+export async function fetchRobinhoodAlphaSignals(
+    input: RobinhoodAlphaInput
+): Promise<RobinhoodAlphaResult> {
+    const headers: Record<string, string> = {};
+    if (input.ftxApiToken) {
+        headers.Authorization = `Bearer ${input.ftxApiToken}`;
+    }
+
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/robinhood-alpha`,
+        { headers }
+    );
+    if (!response.ok && response.status !== 503) {
+        throw new Error(
+            `FrogX Robinhood alpha fetch failed with status ${response.status}`
+        );
+    }
+    return (await response.json()) as RobinhoodAlphaResult;
 }
 
 export async function fetchReferralSummary(

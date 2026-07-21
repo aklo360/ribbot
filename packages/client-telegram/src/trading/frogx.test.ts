@@ -16,6 +16,7 @@ import {
     fetchCopyTradeExecutionStatus,
     fetchNftHoldings,
     fetchPnl,
+    fetchRobinhoodAlphaSignals,
     fetchSniperExecutionStatus,
     fetchStoredBundleBuyExecutionStatus,
     fetchSwapExecutionStatus,
@@ -888,6 +889,38 @@ describe("FTX PNL client", () => {
                 confirmedFillCount: 2,
                 estimatedFillCount: 1,
             },
+        });
+    });
+});
+
+describe("FTX Robinhood alpha client", () => {
+    it("uses the authenticated read-only signal endpoint", async () => {
+        globalThis.fetch = vi.fn(async (input, init) => {
+            expect(String(input)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/robinhood-alpha"
+            );
+            expect(new Headers(init?.headers).get("Authorization")).toBe(
+                "Bearer ribbot-token"
+            );
+            expect(init?.method).toBeUndefined();
+            return Response.json({
+                status: "not_ready",
+                chain: "robinhood",
+                chainId: 4663,
+                scannerEnabled: false,
+                warnings: [],
+            });
+        });
+
+        await expect(
+            fetchRobinhoodAlphaSignals({
+                frogxApiBaseUrl: "https://frogx.example/",
+                ftxApiToken: "ribbot-token",
+            })
+        ).resolves.toMatchObject({
+            status: "not_ready",
+            chainId: 4663,
+            scannerEnabled: false,
         });
     });
 });

@@ -27,6 +27,10 @@ through the FTX/FrogX Worker.
 - Keep `RIBBOT_TRADING_ENABLED=false` and `RIBBOT_TRADING_DRY_RUN=true` unless
   live execution is explicitly approved. FTX live gates are separate and must
   also remain false without explicit approval.
+- Keep `RIBBOT_ALPHA_ALERTS_ENABLED=false` unless proactive Robinhood Chain
+  signal delivery is explicitly approved. `/alpha` may read and render FTX's
+  public research snapshot, but Ribbot must not turn an alpha signal into a
+  wallet, quote, swap, signing, broadcast, or automatic-trading action.
 
 ## Verification
 
