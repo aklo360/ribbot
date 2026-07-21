@@ -407,7 +407,9 @@ export type ActivityAlertCursor = {
     nextAttemptAt?: string;
 };
 
-export type AlphaSignalCursor = ActivityAlertCursor;
+export type AlphaSignalCursor = ActivityAlertCursor & {
+    volumeBaselineAt?: string;
+};
 
 export type TradingAccountWallet = {
     walletId: string;
@@ -1708,11 +1710,35 @@ export class TradingStateStore {
         current.alphaSignalCursor = {
             initializedAt,
             seenEventIds: cleanActivityAlertEventIds(signalIds),
+            volumeBaselineAt: initializedAt,
         };
         current.updatedAt = initializedAt;
         state.users[user.telegramUserId] = current;
         this.persist();
         return current.alphaSignalCursor;
+    }
+
+    baselineAlphaVolumeSignals(
+        user: TradingUser,
+        signalIds: string[],
+        baselinedAt: string
+    ): AlphaSignalCursor {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        const cursor = current.alphaSignalCursor ?? {
+            initializedAt: baselinedAt,
+            seenEventIds: [],
+        };
+        cursor.seenEventIds = cleanActivityAlertEventIds([
+            ...signalIds,
+            ...cursor.seenEventIds,
+        ]);
+        cursor.volumeBaselineAt = baselinedAt;
+        current.alphaSignalCursor = cursor;
+        current.updatedAt = baselinedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return cursor;
     }
 
     markAlphaSignalsDelivered(

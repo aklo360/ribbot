@@ -25,6 +25,12 @@ window; Ribbot owns presentation and delivery only. Keep
 approved the production override on 2026-07-20; the Mini LaunchAgent is live,
 one user is opted in and baselined, and checked-in defaults remain false.
 
+The next undeployed extension adds `/volume`, `/vol`, and `/pairs` plus concise
+new-pair/high-volume/surge cards. Volume and convergence events use the same FTX
+snapshot, opt-in, poll, backoff, and cursor; either command's `on|off` toggles the
+shared feed. Deployment needs fresh approval because an already opted-in chat
+would begin receiving a new proactive message category.
+
 Production credential aliases are resolved by the runner. Ribbot-side trading
 defaults to disabled and dry-run. FTX live execution and monitor gates are also
 disabled. Do not change either set of gates without explicit approval.

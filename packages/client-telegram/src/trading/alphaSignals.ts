@@ -2,6 +2,7 @@ import {
     fetchRobinhoodAlphaSignals,
     type RobinhoodAlphaResult,
     type RobinhoodAlphaSignal,
+    type RobinhoodVolumeSignal,
 } from "./frogx.ts";
 import {
     TradingStateStore,
@@ -14,6 +15,7 @@ const MAX_DELIVERY_BACKOFF_MS = 60 * 60 * 1000;
 export type AlphaSignalBatch = {
     consumedSignalIds: string[];
     signals: RobinhoodAlphaSignal[];
+    volumeSignals?: RobinhoodVolumeSignal[];
     text?: string;
 };
 
@@ -84,6 +86,58 @@ export function buildAlphaSignalBatch(
     };
 }
 
+export function buildRobinhoodSignalBatch(
+    alphaSignals: RobinhoodAlphaSignal[],
+    volumeSignals: RobinhoodVolumeSignal[],
+    seenSignalIds: Iterable<string>,
+    maxSignals: number
+): AlphaSignalBatch {
+    const seen = new Set(seenSignalIds);
+    const events = [
+        ...alphaSignals.map((signal) => ({
+            kind: "alpha" as const,
+            signal,
+            detectedAt: signal.detectedAt,
+        })),
+        ...volumeSignals.map((signal) => ({
+            kind: "volume" as const,
+            signal,
+            detectedAt: signal.detectedAt,
+        })),
+    ]
+        .filter(
+            (event, index, all) =>
+                !seen.has(event.signal.signalId) &&
+                all.findIndex(
+                    (candidate) =>
+                        candidate.signal.signalId === event.signal.signalId
+                ) === index
+        )
+        .sort((a, b) => a.detectedAt.localeCompare(b.detectedAt))
+        .slice(0, Math.max(0, maxSignals));
+    const selectedAlpha = events
+        .filter((event) => event.kind === "alpha")
+        .map((event) => event.signal);
+    const selectedVolume = events
+        .filter((event) => event.kind === "volume")
+        .map((event) => event.signal);
+    if (events.length === 0) {
+        return { consumedSignalIds: [], signals: [], volumeSignals: [] };
+    }
+    return {
+        consumedSignalIds: events.map((event) => event.signal.signalId),
+        signals: selectedAlpha,
+        volumeSignals: selectedVolume,
+        text: events
+            .map((event) =>
+                event.kind === "alpha"
+                    ? formatAlphaSignalAlert(event.signal)
+                    : formatVolumeSignalAlert(event.signal)
+            )
+            .join("\n\n---\n\n"),
+    };
+}
+
 export function formatAlphaSignalAlert(signal: RobinhoodAlphaSignal): string {
     const lines = [
         "Ribbot Robinhood Chain alpha signal",
@@ -105,6 +159,41 @@ export function formatAlphaSignalAlert(signal: RobinhoodAlphaSignal): string {
     return lines.join("\n");
 }
 
+export function formatVolumeSignalAlert(signal: RobinhoodVolumeSignal): string {
+    const reason = signal.reasons
+        .map((value) =>
+            value === "new_pair"
+                ? "NEW PAIR"
+                : value === "high_volume"
+                  ? "HIGH VOLUME"
+                  : "VOLUME SURGE"
+        )
+        .join(" + ");
+    const lines = [
+        "Ribbot Robinhood volume signal",
+        reason,
+        "",
+        `${signal.tokenSymbol} — ${formatUsd(signal.volume24hUsd)} 24h volume`,
+        `Age: ${formatDuration(signal.poolAgeMinutes)} | Transactions: ${signal.transactions24h}`,
+        `Buys / sells: ${signal.buys24h} / ${signal.sells24h}`,
+        `Liquidity: ${formatUsd(signal.liquidityUsd)} | Vol/Liq: ${signal.volumeLiquidityRatio.toFixed(2)}x`,
+    ];
+    if (signal.reasons.includes("volume_surge")) {
+        lines.push(
+            `Volume move: +${formatUsd(Math.max(0, signal.volumeChangeUsd))}${signal.volumeChangeRatio === null ? "" : ` (${signal.volumeChangeRatio.toFixed(2)}x)`}`
+        );
+    }
+    lines.push(
+        `Price: ${formatPrice(signal.priceUsd)} | 24h: ${formatSignedPercent(signal.priceChange24h)}`,
+        `Contract: ${signal.tokenAddress}`,
+        `Chart: ${signal.geckoUrl}`,
+        `Explorer: ${signal.explorerUrl}`,
+        "",
+        signal.disclaimer
+    );
+    return lines.join("\n");
+}
+
 export function formatRobinhoodAlphaOverview(
     result: RobinhoodAlphaResult,
     optedIn: boolean,
@@ -112,7 +201,7 @@ export function formatRobinhoodAlphaOverview(
 ): string {
     const delivery = optedIn
         ? proactiveDeliveryEnabled
-            ? "On"
+            ? "On (shared volume + alpha feed)"
             : "Opted in; operator delivery gate is off"
         : "Off";
     if (result.status === "not_configured") {
@@ -159,6 +248,70 @@ export function formatRobinhoodAlphaOverview(
         }
     }
     if (result.lastError) lines.push("", `Last refresh error: ${result.lastError}`);
+    lines.push(
+        "",
+        ...result.warnings.slice(0, 3).map((warning) => `Warning: ${warning}`)
+    );
+    return lines.join("\n");
+}
+
+export function formatRobinhoodVolumeOverview(
+    result: RobinhoodAlphaResult,
+    optedIn: boolean,
+    proactiveDeliveryEnabled: boolean
+): string {
+    const delivery = optedIn
+        ? proactiveDeliveryEnabled
+            ? "On (shared with /alpha)"
+            : "Opted in; operator delivery gate is off"
+        : "Off";
+    if (result.status === "not_configured") {
+        return [
+            "Ribbot Robinhood Volume Scanner",
+            "",
+            "FTX/FrogX has not configured the read-only scanner.",
+            `Proactive alerts: ${delivery}`,
+        ].join("\n");
+    }
+    if (result.status === "not_ready") {
+        return [
+            "Ribbot Robinhood Volume Scanner",
+            "",
+            result.scannerEnabled
+                ? "The first scanner snapshot is still pending."
+                : "The FTX scanner operator gate is off.",
+            `Proactive alerts: ${delivery}`,
+            ...result.warnings.map((warning) => `Warning: ${warning}`),
+        ].join("\n");
+    }
+
+    const leaders = result.volumeLeaders ?? [];
+    const lines = [
+        "Ribbot Robinhood Volume Scanner",
+        "",
+        `Pools sampled: ${result.summary.volumePools ?? leaders.length}`,
+        `High-volume leaders: ${leaders.length}`,
+        `Stored volume signals: ${result.volumeSignals?.length ?? 0}`,
+        `Proactive alerts: ${delivery}`,
+        `Last scan: ${result.generatedAt}`,
+    ];
+    if (leaders.length === 0) {
+        lines.push(
+            "",
+            "No pool currently clears the configured volume floors."
+        );
+    } else {
+        lines.push("", "Top volume now:");
+        for (const leader of leaders.slice(0, 5)) {
+            lines.push(
+                `${leader.rank}. ${leader.tokenSymbol}${leader.isNewPair ? " [NEW]" : ""} — ${formatUsd(leader.volume24hUsd)} vol / ${formatUsd(leader.liquidityUsd)} liq / ${formatDuration(leader.poolAgeMinutes)}`,
+                `Contract: ${leader.tokenAddress}`,
+                `Chart: ${leader.geckoUrl}`
+            );
+        }
+    }
+    if (result.lastError)
+        lines.push("", `Last refresh error: ${result.lastError}`);
     lines.push(
         "",
         ...result.warnings.slice(0, 3).map((warning) => `Warning: ${warning}`)
@@ -263,14 +416,28 @@ export class AlphaSignalPoller {
             if (!cursor) {
                 this.options.store.initializeAlphaSignalCursor(
                     user,
-                    snapshot.signals.map((signal) => signal.signalId),
+                    [
+                        ...snapshot.signals,
+                        ...(snapshot.volumeSignals ?? []),
+                    ].map((signal) => signal.signalId),
                     observedAt
                 );
                 result.usersBaselined += 1;
                 continue;
             }
-            const batch = buildAlphaSignalBatch(
+            if (!cursor.volumeBaselineAt) {
+                if (snapshot.volumeSignals === undefined) continue;
+                this.options.store.baselineAlphaVolumeSignals(
+                    user,
+                    snapshot.volumeSignals.map((signal) => signal.signalId),
+                    observedAt
+                );
+                result.usersBaselined += 1;
+                continue;
+            }
+            const batch = buildRobinhoodSignalBatch(
                 snapshot.signals,
+                snapshot.volumeSignals ?? [],
                 cursor.seenEventIds,
                 this.options.maxSignalsPerMessage
             );
@@ -366,4 +533,9 @@ function formatPrice(value: number): string {
 function formatDuration(minutes: number): string {
     if (minutes < 60) return `${Math.max(0, Math.round(minutes))}m`;
     return `${(minutes / 60).toFixed(1)}h`;
+}
+
+function formatSignedPercent(value: number): string {
+    if (!Number.isFinite(value)) return "unavailable";
+    return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 }

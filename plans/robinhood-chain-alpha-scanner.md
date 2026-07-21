@@ -6,7 +6,7 @@ This plan follows the global LLPhant execution-plan standard in `~/.codex/PLANS.
 
 ## Purpose / Big Picture
 
-Ribbot should surface read-only Robinhood Chain alpha signals modeled on the linked Solana scanner: periodically find the chain's strongest new pools, identify their most active profitable buyers, reject noisy or low-evidence wallets, and emit a signal when several qualified wallets buy the same fresh token in a short window. A user should be able to run `/alpha` to inspect the latest signals and roster health, opt into proactive notifications with `/alpha on`, and opt out with `/alpha off`. This feature must never build, sign, broadcast, or automatically execute a Robinhood Chain transaction.
+Ribbot should surface read-only Robinhood Chain alpha signals modeled on the linked Solana scanner: periodically find the chain's strongest new pools, identify their most active profitable buyers, reject noisy or low-evidence wallets, and emit a signal when several qualified wallets buy the same fresh token in a short window. The same bounded pool discovery should also track the chain's highest-volume tokens, emphasize newly created pairs, and signal meaningful volume threshold crossings or acceleration without launching a second crawler. A user should be able to run `/alpha` for wallet convergence, `/volume` for volume leaders and new pairs, opt into the shared proactive notification stream with either `/alpha on` or `/volume on`, and opt out with either command's `off` action. These features must never build, sign, broadcast, or automatically execute a Robinhood Chain transaction.
 
 FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplication, and the authenticated read API. Ribbot owns Telegram commands, per-user opt-in state, notification cursors, presentation, and delivery. Every live scanner and proactive-alert loop remains disabled by default until separately configured and deployed.
 
@@ -20,6 +20,10 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - [x] (2026-07-21 03:10Z) Updated both repositories' changelogs, local memories, architecture, and operational rules; recorded verification evidence and remaining activation work here.
 - [x] (2026-07-21 03:59Z) After explicit approval, pushed FTX `305f0ad` and Ribbot `96d189f`, deployed production `frogx-api`, enabled the Mini Ribbot alert override, rebuilt/restarted `com.solanabfs.ribbot`, and verified the live opt-in state.
 - [x] (2026-07-21 03:59Z) Diagnosed production GeckoTerminal throttling and Workers-runtime fetch binding, shipped FTX fixes `c73cb7e` and `0bc1398`, and verified the first persisted production snapshot plus Ribbot baseline.
+- [x] (2026-07-21 04:31Z) Extended FTX's existing discovered-pool universe with high-volume rankings, new-pair emphasis, threshold/surge signals, bounded history, and rate-limit-safe tests.
+- [x] (2026-07-21 04:31Z) Added Ribbot `/volume` presentation and menu controls, merged volume events into the existing opted-in exactly-once DM stream, and added command/delivery coverage.
+- [x] (2026-07-21 04:36Z) Passed 209/209 FTX tests, the Worker dry-run bundle, 83/83 Ribbot trading tests, Ribbot package TypeScript, the production standalone build, and its no-network configuration check; updated both repositories' operational context.
+- [ ] Confirm the production FTX Worker and Mini Ribbot targets, present the expanded DM content/audience, receive explicit approval, then deploy and verify without sending a synthetic notification.
 
 ## Surprises & Discoveries
 
@@ -41,6 +45,8 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
   Evidence: the first paced production run failed with `Illegal invocation`; commit `0bc1398` destructures the fetch function before invocation and adds a receiver assertion to regression coverage.
 - Observation: the first successful production scan remained useful despite later public-API throttling.
   Evidence: snapshot `2026-07-21T03:55:53.365Z` persisted 12 runner pools, 367 trades, 134 candidate wallets, 0 roster wallets, 0 signals, and explicit warnings for ten skipped pool feeds. Ribbot then recorded one opted-in user, one baseline, and zero delivery failures.
+- Observation: the supplied 4AM reference is a public Telegram signal channel rather than an interactive bot; its public landing page promises volume-based calls and a DYOR warning but does not expose post bodies to the read-only preview.
+  Evidence: the public landing page identifies “4AM Solana Volume Signal,” describes calls as volume-based, and separates general, PumpFun, and non-PumpFun feeds. Ribbot adopts the concise reason-first call shape without claiming access to hidden channel logic.
 
 ## Decision Log
 
@@ -68,6 +74,15 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - Decision: Deploy the FTX fixes from a clean temporary checkout after unrelated context-maintenance changes appeared in the primary worktree.
   Rationale: this obeyed the clean-tree release requirement without deleting, stashing, committing, or overwriting another process's `.claude` and `.codex/context-archive` changes.
   Date/Author: 2026-07-21 / LLPhant
+- Decision: Build volume tracking into the existing Robinhood scanner snapshot and Ribbot poller rather than create a second scheduled crawler or Telegram polling loop.
+  Rationale: new/high-volume classification needs the same pool metadata already fetched for wallet analysis. Reuse keeps GeckoTerminal calls bounded under the production rate limit and gives each user one deduplicated delivery cursor.
+  Date/Author: 2026-07-21 / LLPhant
+- Decision: Define “all high-volume tokens” as the bounded union of GeckoTerminal's top, trending, and new Robinhood pool pages, with honest source-coverage warnings rather than a claim of exhaustive chain indexing.
+  Rationale: the anonymous public API cannot economically enumerate every historical pair inside the existing Worker cadence. The bounded union captures the most actionable universe while preserving rate-limit headroom.
+  Date/Author: 2026-07-21 / LLPhant
+- Decision: Supersede the earlier all-trade-feeds failure rule once volume metadata is available.
+  Rationale: if pool discovery succeeds but every selected trade-history request is throttled, FTX can safely refresh volume leaders/signals and retain prior wallet history with an explicit warning. Throwing away valid volume data would reduce availability without improving wallet-signal honesty.
+  Date/Author: 2026-07-21 / LLPhant
 
 ## Outcomes & Retrospective
 
@@ -75,9 +90,11 @@ The read-only MVP is implemented across FTX and Ribbot. FTX now owns bounded Rob
 
 The core loop from the source concept is preserved: runner discovery, top-100 observed buyers per runner, rolling performance evidence, rejection of one-hit/spray/copy-correlated wallets, roster formation, and a four-wallet fresh-token signal. One enrichment remains intentionally incomplete: exact shared-funder/bundler graph detection needs archive funding-graph data, so the live result labels that limitation instead of claiming parity it cannot prove.
 
-Verification completed with 204/204 FTX Worker tests, 80/80 Ribbot package tests, a clean Ribbot package TypeScript check, successful FTX Wrangler and Ribbot standalone bundles, a Ribbot standalone no-network check, a live read-only in-memory scan, and the persisted production snapshot described above. The full FTX TypeScript command remains non-clean because of 14 pre-existing unrelated diagnostics noted above.
+The volume extension is implemented but not deployed. FTX now adds bounded top/trending/new discovery, ranked volume leaders, configurable new-pair/high-volume/surge signals, and graceful volume-only refresh when trade feeds are unavailable. Ribbot now adds `/volume`, `/vol`, and `/pairs`, reason-first alert cards, shared opt-in controls, and mixed-event exactly-once delivery through the existing poller and cursor. A persisted one-time volume baseline ensures existing alpha-only cursors do not replay the initial volume snapshot after upgrade.
 
-Production activation is complete. `frogx-api` final Worker version `be3fc991-1f14-40f6-983b-1db7adc6e52a` runs commit `0bc1398` with the scanner override on. Mini `com.solanabfs.ribbot` runs the built `96d189f` release with its LaunchAgent alpha-alert override on. AKLO's `/alpha on` state is persisted and baselined; there were no delivery failures. No signal was sent because the initial roster and signal sets are empty, and no chain transaction, wallet action, signing, or broadcast occurred.
+Verification now includes 209/209 FTX Worker tests, 83/83 Ribbot trading-package tests, a clean Ribbot package TypeScript check, a successful FTX Wrangler dry-run bundle, the production standalone build, and its no-network configuration check. The live alpha evidence remains valid for the deployed baseline. The full FTX TypeScript command remains non-clean because of 14 pre-existing unrelated diagnostics noted above.
+
+The prior alpha-only production activation remains complete. `frogx-api` Worker version `be3fc991-1f14-40f6-983b-1db7adc6e52a` and Mini `com.solanabfs.ribbot` still run the earlier scanner/client releases; AKLO's `/alpha on` state is persisted and baselined. The volume extension has not changed either live target and has sent no Telegram message.
 
 ## Context and Orientation
 
@@ -95,7 +112,9 @@ The pure engine will combine new and trending pools, filter obviously unusable p
 
 In Ribbot, add typed `fetchRobinhoodAlphaSignals` support, a small pure presentation module, and an `AlphaSignalPoller` patterned after the existing activity poller. Extend non-secret user state with `alphaSignalsEnabled` and a bounded delivery cursor. Add `/alpha`, `/alpha on`, `/alpha off`, and `/alpha status`; manual reads show current scanner state, while the poller only selects opted-in users and only runs when `RIBBOT_ALPHA_ALERTS_ENABLED=true`. The first successful poll baselines existing signals, later polls deliver each unseen signal once, and failed Telegram deliveries keep the signal unseen with exponential retry backoff.
 
-Finally, document false-by-default configuration, update repository changelogs and architecture snapshots, and run focused tests followed by full typecheck/build checks proportionate to each repository. Production overrides require separate explicit approval, which AKLO supplied on 2026-07-20.
+For the volume extension, have FTX rank the bounded top/trending/new pool union by 24-hour USD volume and retain current pool metrics for threshold comparison on the next scan. A volume signal is created only for a new pair that clears its configured minimum, a pool newly crossing the high-volume threshold, or a pool whose 24-hour volume increases by the configured ratio and absolute USD delta. Each signal reports pool age, liquidity, volume, transaction count, volume-to-liquidity ratio, reasons, and verification links. Persist a bounded `volumeLeaders` list plus deduplicated `volumeSignals` in the existing snapshot. Ribbot adds `/volume`, `/vol`, and `/pairs`, formats leaders and new pairs separately, and merges unseen volume and convergence events into the existing per-user cursor and delivery backoff.
+
+Finally, document false-by-default configuration, update repository changelogs and architecture snapshots, and run focused tests followed by full typecheck/build checks proportionate to each repository. AKLO's 2026-07-20 approval covered the original alpha-only release; the new volume DM category requires fresh target confirmation and explicit approval before deployment.
 
 ## Concrete Steps
 
@@ -129,6 +148,8 @@ Ribbot tests must prove command parsing and opt-in transitions, honest empty/not
 
 Acceptance is reached when `/alpha` can render a fixture-backed FTX snapshot, four qualifying test wallets produce one proactive message for an opted-in test user, no message is sent to an opted-out user, and all production gates remain false in checked-in configuration.
 
+The volume extension is accepted when fixtures prove that a qualifying unseen new pair signals once, a high-volume threshold crossing signals once, a configured volume surge signals once, unchanged pools do not repeat, below-threshold pools do not signal, rankings put the highest-volume eligible pool first, `/volume` renders honest coverage and links, and one opted-in poller cursor delivers mixed convergence/volume events exactly once without an additional FTX fetch.
+
 ## Idempotence and Recovery
 
 Every scan is keyed by normalized transaction identity and every signal by chain, token, roster-wallet set, and time bucket, so reruns are safe. Scanner state is bounded to the rolling window plus a limited recent-signal list. A failed scan never replaces the last good roster or signals; it only records failure metadata. Removing the new route and scheduled call leaves existing trading state untouched. Ribbot state migration is additive and defaults every existing user to opted out.
@@ -152,3 +173,9 @@ Plan revision note (2026-07-21 02:49Z): Initial self-contained plan created afte
 Plan revision note (2026-07-21 03:10Z): Marked implementation and verification complete, recorded live fail-closed smoke evidence, documented the shared-funder enrichment gap and existing FTX TypeScript diagnostics, and left deployment/activation explicitly out of scope pending approval.
 
 Plan revision note (2026-07-21 03:59Z): Recorded explicit production approval, release commits and versions, Mini activation, GeckoTerminal/Workers corrections, the first persisted live snapshot, and successful Ribbot opt-in baselining.
+
+Plan revision note (2026-07-21): Extended the living plan for a bounded high-volume/new-pair scanner that reuses the existing FTX ingestion cadence and Ribbot notification stream; deployment remains pending new confirmation because alert content expands beyond wallet-convergence messages.
+
+Plan revision note (2026-07-21 04:31Z): Marked the volume/new-pair implementation and local verification complete, recorded the 4AM presentation reference and volume-only degradation rule, updated test totals, and left both production targets unchanged pending explicit approval for the expanded DM category.
+
+Plan revision note (2026-07-21 04:34Z): Added and verified a one-time volume-category baseline for legacy alpha cursors, updated the final Ribbot test/build evidence, and preserved the no-synthetic-notification rollout rule.

@@ -10,7 +10,7 @@ Telegram/FTX token aliases, sets safe Ribbot trading defaults, and fails closed
 if the standalone build is missing.
 
 The `TradingBot` lifecycle also owns two independent read-only notification
-pollers: existing FTX activity alerts and Robinhood Chain alpha alerts. The alpha
+pollers: existing FTX activity alerts and Robinhood Chain signal alerts. The signal
 poller runs only when `RIBBOT_ALPHA_ALERTS_ENABLED=true`, a Ribbot FTX token is
 configured, Telegram trading commands are available, and at least one user has
 explicitly opted in.
@@ -20,9 +20,10 @@ explicitly opted in.
 - Telegram command parsing, menus, callbacks, and non-secret cache: Ribbot.
 - Business Frog presentation and pagination: Ribbot; embedded-wallet aggregation,
   collection filtering, ownership lookup, and normalized metadata: FTX API.
-- Robinhood alpha command/presentation, per-user opt-in, delivery cursor, and
-  Telegram notification: Ribbot. Pool/trade ingestion, scoring, roster state,
-  convergence detection, and global deduplication: FTX API.
+- Robinhood `/alpha` and undeployed `/volume` command presentation, shared
+  per-user opt-in, delivery cursor, and Telegram notification: Ribbot. Pool/trade
+  ingestion, volume rankings, new-pair/high-volume/surge detection, wallet
+  scoring, roster state, convergence detection, and global deduplication: FTX API.
 - Wallet inventory/provisioning, account state, quote/risk checks, order and
   automation storage, signing, reconciliation, and execution: FTX/FrogX Worker.
 - Privy credentials and authorization signer: encrypted FTX Worker secrets.
@@ -37,8 +38,10 @@ execution path disabled. Independent FTX live execution and monitor gates must
 also pass before Privy signing can occur.
 
 `RIBBOT_ALPHA_ALERTS_ENABLED=false` is the checked-in default that independently
-prevents proactive alpha delivery. AKLO approved a production LaunchAgent
-override on 2026-07-20; the live Mini process currently enables it. Even when
+prevents proactive signal delivery. AKLO approved an alpha-only production
+LaunchAgent override on 2026-07-20; the live Mini process currently enables the
+prior release. Deploying the volume extension would add a new DM category to
+already opted-in users and therefore requires fresh explicit approval. Even when
 enabled, the path is signal-only and cannot build, sign, broadcast, or request a
-transaction. FTX's separately approved production
-`ROBINHOOD_ALPHA_SCANNER_ENABLED` override controls ingestion.
+transaction. FTX's separate `ROBINHOOD_ALPHA_SCANNER_ENABLED` override controls
+ingestion.
