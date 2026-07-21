@@ -7,12 +7,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     AlphaSignalPoller,
     buildAlphaSignalBatch,
+    buildRobinhoodSignalBatch,
     formatRobinhoodAlphaOverview,
+    formatRobinhoodVolumeOverview,
+    formatVolumeSignalAlert,
     parseAlphaCommandAction,
 } from "./alphaSignals.ts";
 import type {
     RobinhoodAlphaResult,
     RobinhoodAlphaSignal,
+    RobinhoodVolumeSignal,
 } from "./frogx.ts";
 import { TradingStateStore } from "./state.ts";
 
@@ -57,7 +61,43 @@ function signal(id: string, detectedAt: string): RobinhoodAlphaSignal {
     };
 }
 
-function snapshot(signals: RobinhoodAlphaSignal[]): RobinhoodAlphaResult {
+function volumeSignal(id: string, detectedAt: string): RobinhoodVolumeSignal {
+    return {
+        signalId: id,
+        tokenAddress: "0x0000000000000000000000000000000000009999",
+        tokenName: "Hood Volume",
+        tokenSymbol: "HVOL",
+        poolAddress: "0x0000000000000000000000000000000000008888",
+        dex: "uniswap-v3-robinhood",
+        createdAt: "2026-07-21T02:30:00.000Z",
+        detectedAt,
+        reasons: ["new_pair", "volume_surge"],
+        poolAgeMinutes: 30,
+        isNewPair: true,
+        priceUsd: 0.00042,
+        priceChange24h: 18.4,
+        liquidityUsd: 45_000,
+        volume24hUsd: 120_000,
+        previousVolume24hUsd: 60_000,
+        volumeChangeUsd: 60_000,
+        volumeChangeRatio: 2,
+        volumeLiquidityRatio: 2.67,
+        buys24h: 160,
+        sells24h: 90,
+        transactions24h: 250,
+        provisional: true,
+        geckoUrl:
+            "https://www.geckoterminal.com/robinhood/pools/0x0000000000000000000000000000000000008888",
+        explorerUrl:
+            "https://robinhoodchain.blockscout.com/token/0x0000000000000000000000000000000000009999",
+        disclaimer: "Research signal only. DYOR.",
+    };
+}
+
+function snapshot(
+    signals: RobinhoodAlphaSignal[],
+    volumeSignals: RobinhoodVolumeSignal[] = []
+): RobinhoodAlphaResult {
     return {
         status: "provisional",
         chain: "robinhood",
@@ -71,9 +111,16 @@ function snapshot(signals: RobinhoodAlphaSignal[]): RobinhoodAlphaResult {
             candidateWallets: 240,
             rosterWallets: 18,
             recentSignals: signals.length,
+            volumePools: 40,
+            volumeLeaders: 1,
+            recentVolumeSignals: volumeSignals.length,
         },
         roster: [],
         signals,
+        volumeLeaders: [
+            { ...volumeSignal("leader", "2026-07-21T03:00:00.000Z"), rank: 1 },
+        ],
+        volumeSignals,
         warnings: ["Read-only research signal."],
     };
 }
@@ -114,6 +161,37 @@ describe("Robinhood alpha presentation", () => {
         expect(text).toContain("Proactive alerts: Off");
         expect(text).toContain("No qualifying 4-wallet convergence signal");
     });
+
+    it("formats a compact 4AM-style new-pair volume call with risk context", () => {
+        const alert = formatVolumeSignalAlert(
+            volumeSignal("volume-1", "2026-07-21T03:00:00.000Z")
+        );
+        expect(alert).toContain("NEW PAIR + VOLUME SURGE");
+        expect(alert).toContain("$120,000 24h volume");
+        expect(alert).toContain("Vol/Liq: 2.67x");
+        expect(alert).toContain("Contract: 0x0000");
+
+        const overview = formatRobinhoodVolumeOverview(
+            snapshot([], []),
+            true,
+            true
+        );
+        expect(overview).toContain("Pools sampled: 40");
+        expect(overview).toContain("HVOL [NEW]");
+    });
+
+    it("orders alpha and volume events through one exactly-once batch", () => {
+        const batch = buildRobinhoodSignalBatch(
+            [signal("alpha-1", "2026-07-21T03:02:00.000Z")],
+            [volumeSignal("volume-1", "2026-07-21T03:01:00.000Z")],
+            [],
+            3
+        );
+        expect(batch.consumedSignalIds).toEqual(["volume-1", "alpha-1"]);
+        expect(batch.text?.indexOf("volume signal")).toBeLessThan(
+            batch.text?.indexOf("alpha signal") ?? 0
+        );
+    });
 });
 
 describe("Robinhood alpha polling", () => {
@@ -152,6 +230,101 @@ describe("Robinhood alpha polling", () => {
         expect(store.getAlphaSignalCursor(currentUser)?.seenEventIds).toContain(
             "signal-2"
         );
+    });
+
+    it("baselines existing volume events and delivers a later volume event once", async () => {
+        const store = stateStore();
+        const currentUser = store.setAlphaSignalsEnabled(user(store), true);
+        const first = volumeSignal("volume-1", "2026-07-21T02:50:00.000Z");
+        const second = volumeSignal("volume-2", "2026-07-21T03:05:00.000Z");
+        let current = snapshot([], [first]);
+        const sendMessage = vi.fn(
+            async (_telegramUserId: string, _text: string) => undefined
+        );
+        const poller = new AlphaSignalPoller({
+            enabled: true,
+            tgTrader: true,
+            frogxApiBaseUrl: "https://frogx.example",
+            ftxApiToken: "secret",
+            pollIntervalMs: 30_000,
+            maxUsersPerPoll: 25,
+            maxSignalsPerMessage: 3,
+            store,
+            sendMessage,
+            fetchSignals: async () => current,
+            now: () => new Date("2026-07-21T03:10:00.000Z"),
+        });
+
+        expect(await poller.pollOnce()).toMatchObject({ usersBaselined: 1 });
+        current = snapshot([], [second, first]);
+        expect(await poller.pollOnce()).toMatchObject({ messagesSent: 1 });
+        expect(sendMessage.mock.calls[0][1]).toContain("NEW PAIR");
+        expect(await poller.pollOnce()).toMatchObject({ messagesSent: 0 });
+        expect(store.getAlphaSignalCursor(currentUser)?.seenEventIds).toContain(
+            "volume-2"
+        );
+    });
+
+    it("baselines volume events once for a legacy alpha-only cursor", async () => {
+        const store = stateStore();
+        const currentUser = store.setAlphaSignalsEnabled(user(store), true);
+        const legacyCursor = store.initializeAlphaSignalCursor(
+            currentUser,
+            ["alpha-old"],
+            "2026-07-21T03:00:00.000Z"
+        );
+        delete legacyCursor.volumeBaselineAt;
+        const existingVolume = volumeSignal(
+            "volume-existing",
+            "2026-07-21T03:01:00.000Z"
+        );
+        let current = snapshot([]);
+        if (current.status === "ready" || current.status === "provisional") {
+            delete current.volumeSignals;
+            delete current.volumeLeaders;
+        }
+        const sendMessage = vi.fn(
+            async (_telegramUserId: string, _text: string) => undefined
+        );
+        const poller = new AlphaSignalPoller({
+            enabled: true,
+            tgTrader: true,
+            frogxApiBaseUrl: "https://frogx.example",
+            ftxApiToken: "secret",
+            pollIntervalMs: 30_000,
+            maxUsersPerPoll: 25,
+            maxSignalsPerMessage: 3,
+            store,
+            sendMessage,
+            fetchSignals: async () => current,
+            now: () => new Date("2026-07-21T03:10:00.000Z"),
+        });
+
+        expect(await poller.pollOnce()).toMatchObject({
+            usersBaselined: 0,
+            messagesSent: 0,
+        });
+        expect(
+            store.getAlphaSignalCursor(currentUser)?.volumeBaselineAt
+        ).toBeUndefined();
+        current = snapshot([], [existingVolume]);
+        expect(await poller.pollOnce()).toMatchObject({
+            usersBaselined: 1,
+            messagesSent: 0,
+        });
+        expect(store.getAlphaSignalCursor(currentUser)).toMatchObject({
+            volumeBaselineAt: "2026-07-21T03:10:00.000Z",
+            seenEventIds: expect.arrayContaining(["volume-existing"]),
+        });
+        current = snapshot(
+            [],
+            [
+                volumeSignal("volume-new", "2026-07-21T03:11:00.000Z"),
+                existingVolume,
+            ]
+        );
+        expect(await poller.pollOnce()).toMatchObject({ messagesSent: 1 });
+        expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
     it("does not fetch or send for opted-out users", async () => {

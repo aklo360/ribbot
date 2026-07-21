@@ -9,6 +9,7 @@ import { ActivityAlertPoller } from "./activityAlerts.ts";
 import {
     AlphaSignalPoller,
     formatRobinhoodAlphaOverview,
+    formatRobinhoodVolumeOverview,
     parseAlphaCommandAction,
 } from "./alphaSignals.ts";
 import {
@@ -135,6 +136,7 @@ type ParsedIntent =
     | { kind: "referral"; action?: "show" | "apply"; referralCode?: string }
     | { kind: "activity" }
     | { kind: "alpha"; action: "show" | "on" | "off" | "status" }
+    | { kind: "volume"; action: "show" | "on" | "off" | "status" }
     | {
           kind: "settings";
           field?:
@@ -283,7 +285,10 @@ export class TradingBot {
                     telegramUserId,
                     text,
                     Markup.inlineKeyboard([
-                        [Markup.button.callback("Alpha", "ribbot:alpha")],
+                        [
+                            Markup.button.callback("Alpha", "ribbot:alpha"),
+                            Markup.button.callback("Volume", "ribbot:volume"),
+                        ],
                         [Markup.button.callback("Menu", "ribbot:menu")],
                     ])
                 ),
@@ -343,6 +348,9 @@ export class TradingBot {
                 return true;
             case "alpha":
                 await this.replyAlpha(ctx, user, intent.action);
+                return true;
+            case "volume":
+                await this.replyVolume(ctx, user, intent.action);
                 return true;
             case "settings":
                 await this.replySettings(ctx, user, intent);
@@ -507,6 +515,20 @@ export class TradingBot {
                 ctx,
                 user,
                 action === "alpha-on" ? "on" : "off"
+            );
+            return true;
+        }
+
+        if (action === "volume") {
+            await this.replyVolume(ctx, user, "show");
+            return true;
+        }
+
+        if (action === "volume-on" || action === "volume-off") {
+            await this.replyVolume(
+                ctx,
+                user,
+                action === "volume-on" ? "on" : "off"
             );
             return true;
         }
@@ -868,6 +890,12 @@ export class TradingBot {
                 action: parseAlphaCommandAction(action),
             };
         }
+        if (["/volume", "/vol", "/pairs"].includes(command)) {
+            return {
+                kind: "volume",
+                action: parseAlphaCommandAction(args[0]?.toLowerCase()),
+            };
+        }
         if (command === "/settings") return parseSettingsIntent(args);
         if (["/positions", "/position"].includes(command)) {
             const mint = findMint(args);
@@ -1077,7 +1105,13 @@ export class TradingBot {
                           ),
                           Markup.button.callback("Activity", "ribbot:activity"),
                       ],
-                      [Markup.button.callback("Robinhood Alpha", "ribbot:alpha")],
+                      [
+                          Markup.button.callback(
+                              "Robinhood Alpha",
+                              "ribbot:alpha"
+                          ),
+                          Markup.button.callback("Volume", "ribbot:volume"),
+                      ],
                       [
                           Markup.button.callback("Settings", "ribbot:settings"),
                           Markup.button.callback("Account", "ribbot:account"),
@@ -1118,8 +1152,9 @@ export class TradingBot {
                               "Robinhood Alpha",
                               "ribbot:alpha"
                           ),
-                          Markup.button.callback("Activity", "ribbot:activity"),
+                          Markup.button.callback("Volume", "ribbot:volume"),
                       ],
+                      [Markup.button.callback("Activity", "ribbot:activity")],
                       [
                           Markup.button.callback(
                               "Watchlist",
@@ -2458,12 +2493,12 @@ export class TradingBot {
         if (action === "on") {
             currentUser = this.store.setAlphaSignalsEnabled(user, true);
             transition = this.config.alphaAlertsEnabled
-                ? "Proactive Robinhood Chain alpha alerts are on for this chat. Existing signals will be baselined before new alerts are delivered."
+                ? "Proactive Robinhood Chain volume and alpha alerts are on for this chat. Existing signals will be baselined before new alerts are delivered."
                 : "Alpha alert opt-in saved. The operator delivery gate is still off, so no proactive Telegram message will be sent yet.";
         } else if (action === "off") {
             currentUser = this.store.setAlphaSignalsEnabled(user, false);
             transition =
-                "Proactive Robinhood Chain alpha alerts are off for this chat.";
+                "Proactive Robinhood Chain volume and alpha alerts are off for this chat.";
         }
 
         try {
@@ -2506,6 +2541,73 @@ export class TradingBot {
                     transition,
                     transition ? "" : undefined,
                     "Robinhood Chain alpha signals are unavailable from FTX/FrogX right now.",
+                    "No trade or chain transaction was attempted.",
+                ]
+                    .filter(Boolean)
+                    .join("\n"),
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private async replyVolume(
+        ctx: Context,
+        user: TradingUser,
+        action: "show" | "on" | "off" | "status"
+    ): Promise<void> {
+        let currentUser = user;
+        let transition: string | undefined;
+        if (action === "on") {
+            currentUser = this.store.setAlphaSignalsEnabled(user, true);
+            transition = this.config.alphaAlertsEnabled
+                ? "Proactive Robinhood volume and alpha alerts are on for this chat. Existing events will be baselined before new alerts are delivered."
+                : "Volume alert opt-in saved. The operator delivery gate is still off, so no proactive Telegram message will be sent yet.";
+        } else if (action === "off") {
+            currentUser = this.store.setAlphaSignalsEnabled(user, false);
+            transition =
+                "Proactive Robinhood volume and alpha alerts are off for this chat.";
+        }
+
+        try {
+            const result = await fetchRobinhoodAlphaSignals({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+            });
+            await ctx.reply(
+                [
+                    transition,
+                    transition ? "" : undefined,
+                    formatRobinhoodVolumeOverview(
+                        result,
+                        Boolean(currentUser.alphaSignalsEnabled),
+                        this.config.alphaAlertsEnabled
+                    ),
+                ]
+                    .filter(Boolean)
+                    .join("\n"),
+                Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback("Refresh", "ribbot:volume"),
+                        currentUser.alphaSignalsEnabled
+                            ? Markup.button.callback(
+                                  "Alerts Off",
+                                  "ribbot:volume-off"
+                              )
+                            : Markup.button.callback(
+                                  "Alerts On",
+                                  "ribbot:volume-on"
+                              ),
+                    ],
+                    [Markup.button.callback("Menu", "ribbot:menu")],
+                ])
+            );
+        } catch (error) {
+            logger.warn("FTX/FrogX Robinhood volume fetch failed", error);
+            await ctx.reply(
+                [
+                    transition,
+                    transition ? "" : undefined,
+                    "Robinhood Chain volume signals are unavailable from FTX/FrogX right now.",
                     "No trade or chain transaction was attempted.",
                 ]
                     .filter(Boolean)
@@ -7076,6 +7178,8 @@ export class TradingBot {
                 "/activity - recent FTX account events",
                 "/alpha - latest Robinhood Chain profitable-wallet signals",
                 "/alpha on|off - opt into or out of proactive alpha alerts",
+                "/volume - Robinhood high-volume tokens and new pairs",
+                "/volume on|off - toggle the shared volume + alpha alert feed",
                 "/cleanup - review dust, hidden, and unpriced token positions",
                 "/safety <mint> - review mint/freeze authority and price signals",
                 "/scan <mint> [SOL] - review safety, market cap, and quote impact",

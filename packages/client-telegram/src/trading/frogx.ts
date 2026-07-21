@@ -512,6 +512,39 @@ export type RobinhoodAlphaSignal = {
     disclaimer: string;
 };
 
+export type RobinhoodVolumeLeader = {
+    rank: number;
+    tokenAddress: string;
+    tokenName: string;
+    tokenSymbol: string;
+    poolAddress: string;
+    dex: string;
+    createdAt: string;
+    poolAgeMinutes: number;
+    isNewPair: boolean;
+    priceUsd: number;
+    priceChange24h: number;
+    liquidityUsd: number;
+    volume24hUsd: number;
+    volumeLiquidityRatio: number;
+    buys24h: number;
+    sells24h: number;
+    transactions24h: number;
+    geckoUrl: string;
+    explorerUrl: string;
+};
+
+export type RobinhoodVolumeSignal = Omit<RobinhoodVolumeLeader, "rank"> & {
+    signalId: string;
+    detectedAt: string;
+    reasons: Array<"new_pair" | "high_volume" | "volume_surge">;
+    previousVolume24hUsd: number;
+    volumeChangeUsd: number;
+    volumeChangeRatio: number | null;
+    provisional: boolean;
+    disclaimer: string;
+};
+
 export type RobinhoodAlphaResult =
     | {
           status: "not_configured";
@@ -537,9 +570,14 @@ export type RobinhoodAlphaResult =
               candidateWallets: number;
               rosterWallets: number;
               recentSignals: number;
+              volumePools?: number;
+              volumeLeaders?: number;
+              recentVolumeSignals?: number;
           };
           roster: RobinhoodAlphaWalletScore[];
           signals: RobinhoodAlphaSignal[];
+          volumeLeaders?: RobinhoodVolumeLeader[];
+          volumeSignals?: RobinhoodVolumeSignal[];
           warnings: string[];
           lastError?: string;
       };

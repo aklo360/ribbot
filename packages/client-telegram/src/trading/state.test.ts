@@ -457,9 +457,10 @@ describe("Robinhood alpha alert state", () => {
             ["robinhood:token:1"],
             "2026-07-21T03:00:00.000Z"
         );
-        expect(store.getAlphaSignalCursor(enabled)?.seenEventIds).toEqual([
-            "robinhood:token:1",
-        ]);
+        expect(store.getAlphaSignalCursor(enabled)).toMatchObject({
+            seenEventIds: ["robinhood:token:1"],
+            volumeBaselineAt: "2026-07-21T03:00:00.000Z",
+        });
 
         const disabled = store.setAlphaSignalsEnabled(enabled, false);
         expect(disabled.alphaSignalsEnabled).toBe(false);

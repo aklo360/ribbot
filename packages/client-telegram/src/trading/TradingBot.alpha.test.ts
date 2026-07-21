@@ -75,4 +75,44 @@ describe("Ribbot Robinhood alpha command", () => {
         };
         expect(persisted.users["123456"].alphaSignalsEnabled).toBe(true);
     });
+
+    it("recognizes /volume on and stores the shared signal-feed opt-in", async () => {
+        const stateFile = path.join(
+            os.tmpdir(),
+            `ribbot-volume-command-${crypto.randomUUID()}.json`
+        );
+        tempFiles.push(stateFile);
+        globalThis.fetch = vi.fn(async () =>
+            Response.json({
+                status: "not_ready",
+                chain: "robinhood",
+                chainId: 4663,
+                scannerEnabled: true,
+                warnings: ["First snapshot pending."],
+            })
+        );
+        const bot = {
+            telegram: { sendMessage: vi.fn(async () => undefined) },
+        } as unknown as Telegraf<Context>;
+        const tradingBot = new TradingBot(bot, {
+            getSetting: (key) =>
+                ({
+                    TG_TRADER: "true",
+                    RIBBOT_FTX_API_TOKEN: "test-token",
+                    FROGX_API_BASE_URL: "https://frogx.example",
+                    RIBBOT_TRADING_STATE_FILE: stateFile,
+                    RIBBOT_ALPHA_ALERTS_ENABLED: "false",
+                })[key],
+        });
+        const { ctx, reply } = context("/volume on");
+
+        await expect(tradingBot.handleMessage(ctx)).resolves.toBe(true);
+        expect(String(reply.mock.calls[0][0])).toContain(
+            "Volume alert opt-in saved"
+        );
+        const persisted = JSON.parse(fs.readFileSync(stateFile, "utf8")) as {
+            users: Record<string, { alphaSignalsEnabled?: boolean }>;
+        };
+        expect(persisted.users["123456"].alphaSignalsEnabled).toBe(true);
+    });
 });
