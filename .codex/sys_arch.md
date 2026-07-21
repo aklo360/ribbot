@@ -20,7 +20,7 @@ explicitly opted in.
 - Telegram command parsing, menus, callbacks, and non-secret cache: Ribbot.
 - Business Frog presentation and pagination: Ribbot; embedded-wallet aggregation,
   collection filtering, ownership lookup, and normalized metadata: FTX API.
-- Robinhood `/alpha` and undeployed `/volume` command presentation, shared
+- Robinhood `/alpha` and `/volume` command presentation, shared
   per-user opt-in, delivery cursor, and Telegram notification: Ribbot. Pool/trade
   ingestion, volume rankings, new-pair/high-volume/surge detection, wallet
   scoring, roster state, convergence detection, and global deduplication: FTX API.
@@ -38,10 +38,9 @@ execution path disabled. Independent FTX live execution and monitor gates must
 also pass before Privy signing can occur.
 
 `RIBBOT_ALPHA_ALERTS_ENABLED=false` is the checked-in default that independently
-prevents proactive signal delivery. AKLO approved an alpha-only production
-LaunchAgent override on 2026-07-20; the live Mini process currently enables the
-prior release. Deploying the volume extension would add a new DM category to
-already opted-in users and therefore requires fresh explicit approval. Even when
-enabled, the path is signal-only and cannot build, sign, broadcast, or request a
-transaction. FTX's separate `ROBINHOOD_ALPHA_SCANNER_ENABLED` override controls
-ingestion.
+prevents proactive signal delivery. AKLO approved the expanded production feed
+on 2026-07-21; Mini `com.solanabfs.ribbot` runs commit `67a1e96` with the existing
+LaunchAgent override. A one-time cursor field baselines the first volume-capable
+snapshot for legacy alpha subscribers without sending it. The path is signal-only
+and cannot build, sign, broadcast, or request a transaction. FTX's separate
+`ROBINHOOD_ALPHA_SCANNER_ENABLED` override controls ingestion.

@@ -23,7 +23,7 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - [x] (2026-07-21 04:31Z) Extended FTX's existing discovered-pool universe with high-volume rankings, new-pair emphasis, threshold/surge signals, bounded history, and rate-limit-safe tests.
 - [x] (2026-07-21 04:31Z) Added Ribbot `/volume` presentation and menu controls, merged volume events into the existing opted-in exactly-once DM stream, and added command/delivery coverage.
 - [x] (2026-07-21 04:36Z) Passed 209/209 FTX tests, the Worker dry-run bundle, 83/83 Ribbot trading tests, Ribbot package TypeScript, the production standalone build, and its no-network configuration check; updated both repositories' operational context.
-- [ ] Confirm the production FTX Worker and Mini Ribbot targets, present the expanded DM content/audience, receive explicit approval, then deploy and verify without sending a synthetic notification.
+- [x] (2026-07-21 05:26Z) After explicit approval, pushed both release commits, deployed FTX Worker version `23602e96-af77-4f7f-a8fb-314bd2e08c84`, rebuilt/restarted Mini `com.solanabfs.ribbot`, and verified the first live volume snapshot plus a no-delivery baseline for the one opted-in chat.
 
 ## Surprises & Discoveries
 
@@ -90,11 +90,11 @@ The read-only MVP is implemented across FTX and Ribbot. FTX now owns bounded Rob
 
 The core loop from the source concept is preserved: runner discovery, top-100 observed buyers per runner, rolling performance evidence, rejection of one-hit/spray/copy-correlated wallets, roster formation, and a four-wallet fresh-token signal. One enrichment remains intentionally incomplete: exact shared-funder/bundler graph detection needs archive funding-graph data, so the live result labels that limitation instead of claiming parity it cannot prove.
 
-The volume extension is implemented but not deployed. FTX now adds bounded top/trending/new discovery, ranked volume leaders, configurable new-pair/high-volume/surge signals, and graceful volume-only refresh when trade feeds are unavailable. Ribbot now adds `/volume`, `/vol`, and `/pairs`, reason-first alert cards, shared opt-in controls, and mixed-event exactly-once delivery through the existing poller and cursor. A persisted one-time volume baseline ensures existing alpha-only cursors do not replay the initial volume snapshot after upgrade.
+The volume extension is implemented and deployed. FTX now adds bounded top/trending/new discovery, ranked volume leaders, configurable new-pair/high-volume/surge signals, and graceful volume-only refresh when trade feeds are unavailable. Ribbot now adds `/volume`, `/vol`, and `/pairs`, reason-first alert cards, shared opt-in controls, and mixed-event exactly-once delivery through the existing poller and cursor. The first production scan sampled 30 pools, stored 25 leaders and 17 volume signals, and retained honest coverage warnings after the new-pool feed exhausted bounded 429 retries.
 
 Verification now includes 209/209 FTX Worker tests, 83/83 Ribbot trading-package tests, a clean Ribbot package TypeScript check, a successful FTX Wrangler dry-run bundle, the production standalone build, and its no-network configuration check. The live alpha evidence remains valid for the deployed baseline. The full FTX TypeScript command remains non-clean because of 14 pre-existing unrelated diagnostics noted above.
 
-The prior alpha-only production activation remains complete. `frogx-api` Worker version `be3fc991-1f14-40f6-983b-1db7adc6e52a` and Mini `com.solanabfs.ribbot` still run the earlier scanner/client releases; AKLO's `/alpha on` state is persisted and baselined. The volume extension has not changed either live target and has sent no Telegram message.
+Production activation is complete. `frogx-api` Worker version `23602e96-af77-4f7f-a8fb-314bd2e08c84` runs FTX commit `3a48a23`; Mini `com.solanabfs.ribbot` runs commit `67a1e96` with PID 43609 at verification. AKLO's shared signal opt-in is persisted, all 17 initial volume events were baselined, no cursor has a delivery timestamp, and there were zero delivery failures. No synthetic Telegram message, chain transaction, wallet action, signing, or broadcast occurred.
 
 ## Context and Orientation
 
@@ -179,3 +179,5 @@ Plan revision note (2026-07-21): Extended the living plan for a bounded high-vol
 Plan revision note (2026-07-21 04:31Z): Marked the volume/new-pair implementation and local verification complete, recorded the 4AM presentation reference and volume-only degradation rule, updated test totals, and left both production targets unchanged pending explicit approval for the expanded DM category.
 
 Plan revision note (2026-07-21 04:34Z): Added and verified a one-time volume-category baseline for legacy alpha cursors, updated the final Ribbot test/build evidence, and preserved the no-synthetic-notification rollout rule.
+
+Plan revision note (2026-07-21 05:26Z): Recorded explicit production approval, pushed release commits, Worker/Mini deployment identities, the first volume-capable snapshot, rate-limit coverage warning, and successful no-delivery baseline verification.
