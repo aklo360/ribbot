@@ -18,6 +18,8 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - [x] (2026-07-21 03:10Z) Implemented the Ribbot API client, `/alpha` command family, opt-in state, durable cursors, and disabled-by-default proactive poller.
 - [x] (2026-07-21 03:10Z) Added focused and regression coverage in both repositories; completed Ribbot TypeScript/build/no-network checks and the FTX Worker dry-run bundle.
 - [x] (2026-07-21 03:10Z) Updated both repositories' changelogs, local memories, architecture, and operational rules; recorded verification evidence and remaining activation work here.
+- [x] (2026-07-21 03:59Z) After explicit approval, pushed FTX `305f0ad` and Ribbot `96d189f`, deployed production `frogx-api`, enabled the Mini Ribbot alert override, rebuilt/restarted `com.solanabfs.ribbot`, and verified the live opt-in state.
+- [x] (2026-07-21 03:59Z) Diagnosed production GeckoTerminal throttling and Workers-runtime fetch binding, shipped FTX fixes `c73cb7e` and `0bc1398`, and verified the first persisted production snapshot plus Ribbot baseline.
 
 ## Surprises & Discoveries
 
@@ -30,9 +32,15 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - Observation: a first live read-only scan correctly produces no roster or signals because the new store has not accumulated the required three-token wallet history.
   Evidence: the in-memory smoke scan observed 4 runner pools, 753 trades, and 286 candidate wallets, then returned 0 roster wallets, 0 signals, and provisional warnings rather than weakening thresholds.
 - Observation: `pnpm` is not on this Mini workspace's `PATH`, although repository-local binaries are installed.
-  Evidence: validation used the installed Vitest, TypeScript, tsup, and Wrangler binaries directly. The full 203-test FTX suite and Worker bundle passed; the standalone Ribbot package also typechecked and built.
+  Evidence: validation used the installed Vitest, TypeScript, tsup, and Wrangler binaries directly. The final 204-test FTX suite and Worker bundle passed; the standalone Ribbot package also typechecked and built.
 - Observation: the full FTX TypeScript command currently reports 14 errors in pre-existing `tradingBot.ts` and test code outside this scanner change.
-  Evidence: none of the reported diagnostics reference `robinhoodAlpha.ts`; the full 200-test regression and Wrangler Worker compilation pass. This remains an existing repository cleanup item rather than being silently described as clean.
+  Evidence: none of the reported diagnostics reference `robinhoodAlpha.ts`; the full 204-test regression and Wrangler Worker compilation pass. This remains an existing repository cleanup item rather than being silently described as clean.
+- Observation: Cloudflare cron's first scanner runs hit GeckoTerminal HTTP 429 throttling, and concurrent pool-trade reads also triggered Cloudflare's stalled-response protection.
+  Evidence: the filtered production tail captured both warnings. The corrected scanner serializes requests at 2.5-second intervals, consumes or cancels every response body, retries 429/5xx responses with bounded backoff, and retains explicit partial-success warnings.
+- Observation: Workers requires global `fetch` to be invoked without an object receiver, unlike the Node test runtime.
+  Evidence: the first paced production run failed with `Illegal invocation`; commit `0bc1398` destructures the fetch function before invocation and adds a receiver assertion to regression coverage.
+- Observation: the first successful production scan remained useful despite later public-API throttling.
+  Evidence: snapshot `2026-07-21T03:55:53.365Z` persisted 12 runner pools, 367 trades, 134 candidate wallets, 0 roster wallets, 0 signals, and explicit warnings for ten skipped pool feeds. Ribbot then recorded one opted-in user, one baseline, and zero delivery failures.
 
 ## Decision Log
 
@@ -54,6 +62,12 @@ FTX/FrogX owns chain ingestion, scoring, global roster state, signal deduplicati
 - Decision: Let the initial production scan fail closed instead of fabricating a seed roster or lowering the three-token evidence threshold.
   Rationale: the concept depends on repeated profitable behavior. A new deployment needs to accumulate real observations before any convergence notification is credible.
   Date/Author: 2026-07-21 / LLPhant
+- Decision: Preserve a scan when at least one selected pool trade feed succeeds, while labeling every skipped feed; fail closed only when every selected trade feed fails.
+  Rationale: anonymous GeckoTerminal throttling is per-request and can affect later pools after valid earlier responses. Discarding valid observations would make the global roster less durable without improving honesty.
+  Date/Author: 2026-07-21 / LLPhant
+- Decision: Deploy the FTX fixes from a clean temporary checkout after unrelated context-maintenance changes appeared in the primary worktree.
+  Rationale: this obeyed the clean-tree release requirement without deleting, stashing, committing, or overwriting another process's `.claude` and `.codex/context-archive` changes.
+  Date/Author: 2026-07-21 / LLPhant
 
 ## Outcomes & Retrospective
 
@@ -61,9 +75,9 @@ The read-only MVP is implemented across FTX and Ribbot. FTX now owns bounded Rob
 
 The core loop from the source concept is preserved: runner discovery, top-100 observed buyers per runner, rolling performance evidence, rejection of one-hit/spray/copy-correlated wallets, roster formation, and a four-wallet fresh-token signal. One enrichment remains intentionally incomplete: exact shared-funder/bundler graph detection needs archive funding-graph data, so the live result labels that limitation instead of claiming parity it cannot prove.
 
-Verification completed with 203/203 FTX Worker tests, 80/80 Ribbot package tests, a clean Ribbot package TypeScript check, successful FTX Wrangler and Ribbot standalone bundles, a Ribbot standalone no-network check, and a live read-only in-memory scan against current GeckoTerminal data. The full FTX TypeScript command remains non-clean because of 14 pre-existing unrelated diagnostics noted above.
+Verification completed with 204/204 FTX Worker tests, 80/80 Ribbot package tests, a clean Ribbot package TypeScript check, successful FTX Wrangler and Ribbot standalone bundles, a Ribbot standalone no-network check, a live read-only in-memory scan, and the persisted production snapshot described above. The full FTX TypeScript command remains non-clean because of 14 pre-existing unrelated diagnostics noted above.
 
-No deployment, Telegram send, chain transaction, secret change, service restart, or production gate change occurred. Production activation still requires a confirmed deploy target plus explicit approval to deploy and enable the two independent operator gates.
+Production activation is complete. `frogx-api` final Worker version `be3fc991-1f14-40f6-983b-1db7adc6e52a` runs commit `0bc1398` with the scanner override on. Mini `com.solanabfs.ribbot` runs the built `96d189f` release with its LaunchAgent alpha-alert override on. AKLO's `/alpha on` state is persisted and baselined; there were no delivery failures. No signal was sent because the initial roster and signal sets are empty, and no chain transaction, wallet action, signing, or broadcast occurred.
 
 ## Context and Orientation
 
@@ -75,13 +89,13 @@ The scanner's “runner” is a fresh or trending liquidity pool with enough rea
 
 ## Plan of Work
 
-In FTX, add a focused `apps/api/src/robinhoodAlpha.ts` module containing the external JSON adapters, pure scoring and filter functions, bounded scan orchestration, response types, and authenticated read projection. Store a bounded scanner snapshot in the singleton trading-bot Durable Object using a small internal GET/PUT endpoint. Route `GET /api/frogx/trading-bot/robinhood-alpha` through existing Ribbot bearer authentication. Call the scan runner from the existing five-minute scheduled event, but have the runner immediately return unless `ROBINHOOD_ALPHA_SCANNER_ENABLED=true`; when enabled, its persisted `nextScanAt` enforces an hours-scale cadence. No scanner code may call execution, Privy, wallet, swap, or transaction-submission paths.
+In FTX, add a focused `apps/api/src/robinhoodAlpha.ts` module containing the external JSON adapters, pure scoring and filter functions, bounded scan orchestration, response types, and authenticated read projection. Store a bounded scanner snapshot in the singleton trading-bot Durable Object using a small internal GET/PUT endpoint. Route `GET /api/frogx/trading-bot/robinhood-alpha` through existing Ribbot bearer authentication. Call the scan runner from the existing five-minute scheduled event, but have the runner immediately return unless `ROBINHOOD_ALPHA_SCANNER_ENABLED=true`; when enabled, its persisted `nextScanAt` enforces the configured scan cadence. No scanner code may call execution, Privy, wallet, swap, or transaction-submission paths.
 
 The pure engine will combine new and trending pools, filter obviously unusable pools, fetch a bounded number of recent trades per selected pool, rank up to 100 buyers per runner by USD buy volume, and maintain rolling wallet/token observations. It will reject low-evidence one-hit wallets, launch sprayers, negative-return wallets, low-win-rate wallets, and addresses with excessive same-second correlation. It will deduplicate wallet addresses, pool trades, and signal keys. Output includes the exact thresholds, observed history depth, data-source warnings, roster summaries, and Blockscout/GeckoTerminal links so Ribbot never implies certainty.
 
 In Ribbot, add typed `fetchRobinhoodAlphaSignals` support, a small pure presentation module, and an `AlphaSignalPoller` patterned after the existing activity poller. Extend non-secret user state with `alphaSignalsEnabled` and a bounded delivery cursor. Add `/alpha`, `/alpha on`, `/alpha off`, and `/alpha status`; manual reads show current scanner state, while the poller only selects opted-in users and only runs when `RIBBOT_ALPHA_ALERTS_ENABLED=true`. The first successful poll baselines existing signals, later polls deliver each unseen signal once, and failed Telegram deliveries keep the signal unseen with exponential retry backoff.
 
-Finally, document configuration without enabling it, update repository changelogs and architecture snapshots, and run focused tests followed by full typecheck/build checks proportionate to each repository.
+Finally, document false-by-default configuration, update repository changelogs and architecture snapshots, and run focused tests followed by full typecheck/build checks proportionate to each repository. Production overrides require separate explicit approval, which AKLO supplied on 2026-07-20.
 
 ## Concrete Steps
 
@@ -90,7 +104,7 @@ Work in `ftx`:
     cd /Users/llphant/projects/solanaBFS/ftx
     cd apps/api
     node_modules/.bin/vitest run src
-    ../../node_modules/.bin/wrangler deploy --dry-run --outdir /private/tmp/frogx-alpha-wrangler-20260721-2
+    node_modules/.bin/wrangler deploy --dry-run --outdir /private/tmp/frogx-alpha-wrangler-20260721-2
 
 Work in `ribbot`:
 
@@ -103,7 +117,7 @@ Work in `ribbot`:
 
 The checked-in runner itself was not invoked because it sources the guarded local secret store; the built standalone's `--check` path proves configuration without reading that file or contacting Telegram/FTX.
 
-No deploy command, service restart, Telegram send, or production variable mutation belongs to this plan without a separate explicit approval and confirmed target.
+Deploy commands, the Mini service restart, and both production overrides were executed only after AKLO explicitly approved the confirmed production targets. No test notification was sent; future direct messages are limited to newly detected signals for users who explicitly run `/alpha on`.
 
 ## Validation and Acceptance
 
@@ -136,3 +150,5 @@ Robinhood mainnet constants verified during research are chain ID `4663`, native
 Plan revision note (2026-07-21 02:49Z): Initial self-contained plan created after live source and data-path validation.
 
 Plan revision note (2026-07-21 03:10Z): Marked implementation and verification complete, recorded live fail-closed smoke evidence, documented the shared-funder enrichment gap and existing FTX TypeScript diagnostics, and left deployment/activation explicitly out of scope pending approval.
+
+Plan revision note (2026-07-21 03:59Z): Recorded explicit production approval, release commits and versions, Mini activation, GeckoTerminal/Workers corrections, the first persisted live snapshot, and successful Ribbot opt-in baselining.

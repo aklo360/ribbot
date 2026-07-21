@@ -36,7 +36,9 @@ Ribbot requires `TG_TRADER=true` to serve deterministic commands, while
 execution path disabled. Independent FTX live execution and monitor gates must
 also pass before Privy signing can occur.
 
-`RIBBOT_ALPHA_ALERTS_ENABLED=false` independently prevents proactive alpha
-delivery. Even when enabled, the path is signal-only and cannot build, sign,
-broadcast, or request a transaction. FTX's separate
-`ROBINHOOD_ALPHA_SCANNER_ENABLED` gate controls ingestion.
+`RIBBOT_ALPHA_ALERTS_ENABLED=false` is the checked-in default that independently
+prevents proactive alpha delivery. AKLO approved a production LaunchAgent
+override on 2026-07-20; the live Mini process currently enables it. Even when
+enabled, the path is signal-only and cannot build, sign, broadcast, or request a
+transaction. FTX's separately approved production
+`ROBINHOOD_ALPHA_SCANNER_ENABLED` override controls ingestion.
