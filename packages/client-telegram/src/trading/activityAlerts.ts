@@ -8,10 +8,12 @@ import {
     type ActivityAlertCursor,
     type TradingUser,
 } from "./state.ts";
+import { solscanTransactionLine } from "./solscan.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const ACTIVITY_FETCH_LIMIT = 100;
 const MAX_DELIVERY_BACKOFF_MS = 60 * 60 * 1000;
+const RECENT_ONBOARDING_EVENT_MAX_AGE_MS = 15 * 60 * 1000;
 
 const TRADE_ALERT_EVENT_TYPES = new Set([
     "swap_executed",
@@ -34,8 +36,13 @@ const REVIEW_ALERT_EVENT_TYPES = new Set([
     "execution_manual_review_resolved",
 ]);
 
+const ONBOARDING_ALERT_EVENT_TYPES = new Set([
+    "imperial_connected",
+    "imperial_deposit_confirmed",
+]);
+
 type AlertGroup = {
-    family: "trade" | "review";
+    family: "trade" | "review" | "onboarding";
     identifiers: Set<string>;
     events: ActivityEvent[];
 };
@@ -50,6 +57,7 @@ export type ActivityAlertNotification = {
 export type ActivityAlertBatch = {
     consumedEventIds: string[];
     notifications: ActivityAlertNotification[];
+    messageKind?: "activity" | "onboarding";
     text?: string;
 };
 
@@ -71,7 +79,11 @@ type ActivityAlertPollerOptions = {
     maxUsersPerPoll: number;
     maxEventsPerMessage: number;
     store: TradingStateStore;
-    sendMessage: (telegramUserId: string, text: string) => Promise<unknown>;
+    sendMessage: (
+        telegramUserId: string,
+        text: string,
+        messageKind: "activity" | "onboarding"
+    ) => Promise<unknown>;
     logger?: {
         info: (...values: unknown[]) => void;
         warn: (...values: unknown[]) => void;
@@ -117,6 +129,68 @@ export function buildActivityAlertBatch(
         return { consumedEventIds, notifications };
     }
 
+    const onboardingOnly = selected.every(
+        (group) => group.family === "onboarding"
+    );
+
+    if (onboardingOnly) {
+        const depositEvent = selected
+            .flatMap((group) => group.events)
+            .filter((event) => event.eventType === "imperial_deposit_confirmed")
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (depositEvent) {
+            const amount = plainValue(depositEvent.metadata?.uiAmountString);
+            return {
+                consumedEventIds,
+                notifications,
+                messageKind: "onboarding",
+                text: [
+                    amount
+                        ? `Deposit received: ${amount} USDC`
+                        : "Deposit received.",
+                    "",
+                    "Your Imperial Perps Wallet is funded.",
+                    "",
+                    "Next: Ribbot will message you when farming is ready.",
+                ].join("\n"),
+            };
+        }
+
+        const connectionEvent = selected
+            .flatMap((group) => group.events)
+            .filter((event) => event.eventType === "imperial_connected")
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (!plainValue(connectionEvent?.metadata?.profileAddress)) {
+            return {
+                consumedEventIds,
+                notifications,
+                messageKind: "onboarding",
+                text: [
+                    "Ribbot setup is almost ready.",
+                    "",
+                    "Next: tap /status.",
+                ].join("\n"),
+            };
+        }
+
+        return {
+            consumedEventIds,
+            notifications,
+            messageKind: "onboarding",
+            text: [
+                "Ribbot is ready.",
+                "",
+                ...notifications.map(
+                    (notification) => notification.detail ?? notification.title
+                ),
+                "",
+                "Next:",
+                "Send SOL to the Spot & NFT Wallet for swaps and frogs.",
+                "Send at least 50 USDC on Solana to the Imperial Perps Wallet for perps trading.",
+            ].join("\n"),
+        };
+    }
+
     const lines = [
         notifications.length === 1
             ? "FTX trade update"
@@ -132,6 +206,7 @@ export function buildActivityAlertBatch(
     return {
         consumedEventIds,
         notifications,
+        messageKind: "activity",
         text: lines.join("\n"),
     };
 }
@@ -210,7 +285,7 @@ export class ActivityAlertPoller {
 
         for (const user of usersToPoll) {
             const now = (this.options.now ?? (() => new Date()))();
-            const cursor = this.options.store.getActivityAlertCursor(user);
+            let cursor = this.options.store.getActivityAlertCursor(user);
             if (isDeliveryBackoffActive(cursor, now)) continue;
             result.usersChecked += 1;
 
@@ -238,13 +313,22 @@ export class ActivityAlertPoller {
 
             const observedAt = now.toISOString();
             if (!cursor) {
-                this.options.store.initializeActivityAlertCursor(
+                const recentOnboardingIds = new Set(
+                    activity.events
+                        .filter((event) => isRecentOnboardingEvent(event, now))
+                        .map((event) => event.eventId)
+                );
+                cursor = this.options.store.initializeActivityAlertCursor(
                     user,
-                    activity.events.map((event) => event.eventId),
+                    activity.events
+                        .filter(
+                            (event) => !recentOnboardingIds.has(event.eventId)
+                        )
+                        .map((event) => event.eventId),
                     observedAt
                 );
                 result.usersBaselined += 1;
-                continue;
+                if (recentOnboardingIds.size === 0) continue;
             }
 
             const batch = buildActivityAlertBatch(
@@ -264,7 +348,11 @@ export class ActivityAlertPoller {
             }
 
             try {
-                await this.options.sendMessage(user.telegramUserId, batch.text);
+                await this.options.sendMessage(
+                    user.telegramUserId,
+                    batch.text,
+                    batch.messageKind ?? "activity"
+                );
                 this.options.store.markActivityAlertsDelivered(
                     user,
                     batch.consumedEventIds,
@@ -344,7 +432,16 @@ function deliveryBackoffMs(
 function alertFamily(event: ActivityEvent): AlertGroup["family"] | undefined {
     if (TRADE_ALERT_EVENT_TYPES.has(event.eventType)) return "trade";
     if (REVIEW_ALERT_EVENT_TYPES.has(event.eventType)) return "review";
+    if (ONBOARDING_ALERT_EVENT_TYPES.has(event.eventType)) return "onboarding";
     return undefined;
+}
+
+function isRecentOnboardingEvent(event: ActivityEvent, now: Date): boolean {
+    if (!ONBOARDING_ALERT_EVENT_TYPES.has(event.eventType)) return false;
+    const createdAt = Date.parse(event.createdAt);
+    if (!Number.isFinite(createdAt)) return false;
+    const age = now.getTime() - createdAt;
+    return age >= 0 && age <= RECENT_ONBOARDING_EVENT_MAX_AGE_MS;
 }
 
 function groupAlertEvents(events: ActivityEvent[]): AlertGroup[] {
@@ -386,6 +483,14 @@ function alertIdentifiers(
     family: AlertGroup["family"]
 ): Set<string> {
     const metadata = event.metadata ?? {};
+    if (family === "onboarding") {
+        const profileAddress = plainValue(metadata.profileAddress);
+        return new Set([
+            profileAddress
+                ? `onboarding:${profileAddress}`
+                : `onboarding:${event.eventId}`,
+        ]);
+    }
     if (family === "review") {
         const caseId = plainValue(metadata.caseId);
         const referenceId = plainValue(metadata.referenceId);
@@ -445,6 +550,8 @@ function projectAlertGroup(group: AlertGroup): ActivityAlertNotification {
 
 function alertPriority(event: ActivityEvent): number {
     const priorities: Record<string, number> = {
+        imperial_deposit_confirmed: 160,
+        imperial_connected: 150,
         advanced_automation_config_reconciled: 140,
         automation_order_reconciled: 135,
         advanced_automation_config_failed: 130,
@@ -468,6 +575,13 @@ function alertTitle(event: ActivityEvent): string {
     const metadata = event.metadata ?? {};
     const resolution = plainValue(metadata.resolution);
 
+    if (event.eventType === "imperial_connected") {
+        return "Ribbot connected";
+    }
+    if (event.eventType === "imperial_deposit_confirmed") {
+        const amount = plainValue(metadata.uiAmountString);
+        return amount ? `Deposit received: ${amount} USDC` : "Deposit received";
+    }
     if (event.eventType === "execution_manual_review_required") {
         return "Execution needs manual review";
     }
@@ -515,6 +629,26 @@ function alertTitle(event: ActivityEvent): string {
 
 function alertDetail(event: ActivityEvent): string | undefined {
     const metadata = event.metadata ?? {};
+    if (event.eventType === "imperial_connected") {
+        const authorityWalletAddress = plainValue(
+            metadata.authorityWalletAddress
+        );
+        const profileAddress = plainValue(metadata.profileAddress);
+        return authorityWalletAddress && profileAddress
+            ? [
+                  "Spot & NFT Wallet (Privy):",
+                  authorityWalletAddress,
+                  "",
+                  "Imperial Perps Wallet:",
+                  profileAddress,
+              ].join("\n")
+            : profileAddress
+              ? `Imperial Perps Wallet:\n${profileAddress}`
+              : "Imperial Perps Wallet not available.";
+    }
+    if (event.eventType === "imperial_deposit_confirmed") {
+        return "Your Imperial Perps Wallet is funded.";
+    }
     const side = activityEventSide(event);
     const mint = tradeMint(metadata, side);
     const amount = tradeAmount(metadata, side);
@@ -527,9 +661,7 @@ function alertDetail(event: ActivityEvent): string | undefined {
         plainValue(metadata.providerStatus)
             ? `provider ${plainValue(metadata.providerStatus)}`
             : undefined,
-        plainValue(metadata.signature)
-            ? `sig ${shortValue(plainValue(metadata.signature) as string)}`
-            : undefined,
+        solscanTransactionLine(plainValue(metadata.signature)),
         plainValue(metadata.reason)
             ? truncate(plainValue(metadata.reason) as string, 160)
             : undefined,

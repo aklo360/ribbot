@@ -18,6 +18,14 @@ out/
 .env.development
 .env.test
 .env.production
+.dev.vars
+
+# Private local agent context
+AGENTS.md
+CLAUDE.md
+.codex/
+.claude/
+.llphant/
 
 # Logs
 logs
@@ -34,6 +42,7 @@ pnpm-debug.log*
 *.swo
 .DS_Store
 *.pem
+*.key
 
 # Testing
 coverage/

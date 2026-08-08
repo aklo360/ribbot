@@ -67,8 +67,7 @@ describe("account settings cache", () => {
                     walletSource: "privy",
                     privyUserId: "user_123",
                     privyWalletId: "wallet_1",
-                    solanaWalletAddress:
-                        "11111111111111111111111111111111",
+                    solanaWalletAddress: "11111111111111111111111111111111",
                     createdAt: "2026-07-10T00:00:00.000Z",
                 },
                 {
@@ -79,6 +78,15 @@ describe("account settings cache", () => {
                     privyWalletId: "wallet_2",
                     solanaWalletAddress:
                         "So11111111111111111111111111111111111111112",
+                    createdAt: "2026-07-10T00:00:00.000Z",
+                },
+                {
+                    walletId:
+                        "external:Vote111111111111111111111111111111111111111",
+                    label: "Portfolio",
+                    walletSource: "external",
+                    solanaWalletAddress:
+                        "Vote111111111111111111111111111111111111111",
                     createdAt: "2026-07-10T00:00:00.000Z",
                 },
             ],
@@ -98,8 +106,18 @@ describe("account settings cache", () => {
             instantAutoBuyMinLiquidityUsd: 2500,
             instantAutoBuyMaxMarketCapUsd: 2_000_000,
         });
-        expect(synced.activeWalletId).toBe("wallet_2");
+        expect(synced.activeWalletId).toBe("wallet_1");
         expect(synced.wallets).toHaveLength(2);
+        expect(synced.wallets).toEqual([
+            expect.objectContaining({
+                walletId: "wallet_1",
+                label: "Spot & NFT Wallet (Privy)",
+            }),
+            expect.objectContaining({
+                walletSource: "external",
+                label: "Portfolio Wallet (Read only)",
+            }),
+        ]);
     });
 
     it("keeps confirmation disabled while simple mode is active", () => {
@@ -442,28 +460,5 @@ describe("advanced automation execution cache state", () => {
         expect(store.cancelAutoBuyConfig(user, failed.id)?.status).toBe(
             "cancelled"
         );
-    });
-});
-
-describe("Robinhood alpha alert state", () => {
-    it("defaults to opt-out, persists opt-in, and clears the cursor on opt-out", () => {
-        const { store, user } = createStore();
-        expect(user.alphaSignalsEnabled).toBe(false);
-
-        const enabled = store.setAlphaSignalsEnabled(user, true);
-        expect(enabled.alphaSignalsEnabled).toBe(true);
-        store.initializeAlphaSignalCursor(
-            enabled,
-            ["robinhood:token:1"],
-            "2026-07-21T03:00:00.000Z"
-        );
-        expect(store.getAlphaSignalCursor(enabled)).toMatchObject({
-            seenEventIds: ["robinhood:token:1"],
-            volumeBaselineAt: "2026-07-21T03:00:00.000Z",
-        });
-
-        const disabled = store.setAlphaSignalsEnabled(enabled, false);
-        expect(disabled.alphaSignalsEnabled).toBe(false);
-        expect(store.getAlphaSignalCursor(disabled)).toBeUndefined();
     });
 });

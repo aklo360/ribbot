@@ -1,4 +1,4 @@
-import { Context, Markup, Telegraf } from "telegraf";
+import { Context, Input, Markup, Telegraf } from "telegraf";
 import {
     loadTradingConfig,
     type SettingsSource,
@@ -6,12 +6,6 @@ import {
 } from "./config.ts";
 import { logger } from "./logger.ts";
 import { ActivityAlertPoller } from "./activityAlerts.ts";
-import {
-    AlphaSignalPoller,
-    formatRobinhoodAlphaOverview,
-    formatRobinhoodVolumeOverview,
-    parseAlphaCommandAction,
-} from "./alphaSignals.ts";
 import {
     parseAutoBuyIntent,
     type AutoBuyCommandIntent,
@@ -22,6 +16,11 @@ import {
 } from "./copyTradeCommand.ts";
 import { requiresTradeConfirmation } from "./tradePolicy.ts";
 import { marketRiskQuoteBlockingReason } from "./marketRiskMessaging.ts";
+import { solscanTransactionLine, solscanTransactionLines } from "./solscan.ts";
+import {
+    buildFrogContactSheet,
+    FROG_CONTACT_SHEET_PAGE_SIZE,
+} from "./frogContactSheet.ts";
 import {
     parseWalletCommand,
     type WalletCommandIntent,
@@ -41,6 +40,7 @@ import {
     type BundleBuyConfig,
     type CopyTradeConfig,
     type DirectExecutionReconciliation,
+    type FrogTradeTicket,
     type PendingOrder,
     type SniperConfig,
     type TradingUser,
@@ -57,10 +57,17 @@ import {
     cancelStoredScheduledOrder,
     cancelStoredSniperConfig,
     executeSwapTransaction,
+    executeFrogBuy,
+    executeFrogSell,
     executeStoredBundleBuyConfig,
     executeWithdrawal,
     fetchActivity,
-    fetchRobinhoodAlphaSignals,
+    fetchDeltaNeutralStatus,
+    fetchFrogBuyExecutionStatus,
+    fetchFrogMarket,
+    fetchFrogTopOffer,
+    fetchFrogSellExecutionStatus,
+    fetchPerpsStatus,
     fetchSwapExecutionStatus,
     fetchMarketRisk,
     fetchNftHoldings,
@@ -85,11 +92,16 @@ import {
     fetchPositions,
     fetchQuote,
     formatQuoteLines,
+    previewDeltaNeutral,
+    startDeltaNeutral,
+    stopDeltaNeutral,
+    type DeltaNeutralPreview,
+    type DeltaNeutralRun,
     type ActivityEvent,
     type BundleBuyExecutionItem,
     type DirectExecutionStatusResult,
+    type FrogTradeExecutionResult,
     type MarketRiskQuoteProbe,
-    type NftHolding,
     type PositionToken,
     type PnlToken,
     type ScheduledOrderKind,
@@ -97,6 +109,7 @@ import {
     type TokenSafetyFlag,
     provisionTradingWallet,
     requestControlCode,
+    resetTradingSetup,
     type ScheduledOrderSide,
     type SniperSource,
     storeCopyTradeConfig,
@@ -120,6 +133,22 @@ import {
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const FROG_CONFIRMATION_POLL_INTERVAL_MS = 3_000;
+const FROG_CONFIRMATION_MAX_ATTEMPTS = 40;
+const FROG_BULK_SELL_PROMPT_TTL_MS = 2 * 60 * 1_000;
+const RIBBOT_BETA_INTRO = [
+    "Gribbit, nice to meet you. 🐸",
+    "",
+    "This is Ribbot, your trading assistant for the Frog Trading Exchange, brought to you by the Solana Business Frogs.",
+    "",
+    "Let's set up your accounts.",
+    "",
+    "1. Spot & NFT trading on Frog Trading Exchange",
+    "",
+    "2. Perps powered by Imperial",
+    "",
+    "Privy secures your account and wallet key.",
+].join("\n");
 
 type ManualReviewDisplay = {
     manualReviewRequired?: boolean;
@@ -128,15 +157,22 @@ type ManualReviewDisplay = {
     manualReviewReason?: string | null;
 };
 
+type FrogTradeReconciliationOutcome = "handled" | "pending" | "retry";
+
 type ParsedIntent =
+    | { kind: "onboarding"; referralCode?: string }
     | { kind: "menu" }
+    | { kind: "farm" }
+    | { kind: "perpsStatus" }
+    | { kind: "deltaNeutral" }
+    | { kind: "deltaNeutralStop" }
+    | { kind: "spotComingSoon" }
     | WalletCommandIntent
     | { kind: "account" }
     | { kind: "control" }
+    | { kind: "reset" }
     | { kind: "referral"; action?: "show" | "apply"; referralCode?: string }
     | { kind: "activity" }
-    | { kind: "alpha"; action: "show" | "on" | "off" | "status" }
-    | { kind: "volume"; action: "show" | "on" | "off" | "status" }
     | {
           kind: "settings";
           field?:
@@ -158,6 +194,9 @@ type ParsedIntent =
       }
     | { kind: "positions"; mint?: string; page?: number }
     | { kind: "nfts"; page?: number }
+    | { kind: "frogBuy"; maximumSol?: number }
+    | { kind: "frogSweep"; quantity?: number; maximumSol?: number }
+    | { kind: "frogSell"; mint?: string; minimumSol?: number }
     | { kind: "pnl" }
     | { kind: "cleanup" }
     | { kind: "safety"; mint?: string }
@@ -238,7 +277,12 @@ export class TradingBot {
     private readonly config: TradingConfig;
     private readonly store: TradingStateStore;
     private readonly activityAlertPoller: ActivityAlertPoller;
-    private readonly alphaSignalPoller: AlphaSignalPoller;
+    private readonly frogConfirmationTimers = new Map<
+        string,
+        ReturnType<typeof setTimeout>
+    >();
+    private readonly pendingFrogBulkSellPrompts = new Map<string, number>();
+    private frogConfirmationPollingStopped = false;
 
     constructor(bot: Telegraf<Context>, runtime: SettingsSource) {
         this.bot = bot;
@@ -257,41 +301,22 @@ export class TradingBot {
                 info: (...values) => logger.info(...values),
                 warn: (...values) => logger.warn(...values),
             },
-            sendMessage: (telegramUserId, text) =>
-                this.bot.telegram.sendMessage(
-                    telegramUserId,
-                    text,
-                    Markup.inlineKeyboard([
-                        [Markup.button.callback("Activity", "ribbot:activity")],
-                        [Markup.button.callback("Menu", "ribbot:menu")],
-                    ])
-                ),
-        });
-        this.alphaSignalPoller = new AlphaSignalPoller({
-            enabled: this.config.alphaAlertsEnabled,
-            tgTrader: this.config.tgTrader,
-            frogxApiBaseUrl: this.config.frogxApiBaseUrl,
-            ftxApiToken: this.config.ftxApiToken,
-            pollIntervalMs: this.config.alphaAlertPollIntervalMs,
-            maxUsersPerPoll: this.config.alphaAlertMaxUsersPerPoll,
-            maxSignalsPerMessage: this.config.alphaAlertMaxSignalsPerMessage,
-            store: this.store,
-            logger: {
-                info: (...values) => logger.info(...values),
-                warn: (...values) => logger.warn(...values),
-            },
-            sendMessage: (telegramUserId, text) =>
-                this.bot.telegram.sendMessage(
-                    telegramUserId,
-                    text,
-                    Markup.inlineKeyboard([
-                        [
-                            Markup.button.callback("Alpha", "ribbot:alpha"),
-                            Markup.button.callback("Volume", "ribbot:volume"),
-                        ],
-                        [Markup.button.callback("Menu", "ribbot:menu")],
-                    ])
-                ),
+            sendMessage: (telegramUserId, text, messageKind) =>
+                messageKind === "onboarding"
+                    ? this.bot.telegram.sendMessage(telegramUserId, text)
+                    : this.bot.telegram.sendMessage(
+                          telegramUserId,
+                          text,
+                          Markup.inlineKeyboard([
+                              [
+                                  Markup.button.callback(
+                                      "Activity",
+                                      "ribbot:activity"
+                                  ),
+                              ],
+                              [Markup.button.callback("Menu", "ribbot:menu")],
+                          ])
+                      ),
         });
     }
 
@@ -300,16 +325,17 @@ export class TradingBot {
     }
 
     startActivityAlerts(): boolean {
-        const activityStarted = this.activityAlertPoller.start();
-        const alphaStarted = this.alphaSignalPoller.start();
-        return activityStarted || alphaStarted;
+        return this.activityAlertPoller.start();
     }
 
     async stopActivityAlerts(): Promise<void> {
-        await Promise.all([
-            this.activityAlertPoller.stop(),
-            this.alphaSignalPoller.stop(),
-        ]);
+        this.frogConfirmationPollingStopped = true;
+        for (const timer of this.frogConfirmationTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.frogConfirmationTimers.clear();
+        this.pendingFrogBulkSellPrompts.clear();
+        await this.activityAlertPoller.stop();
     }
 
     async handleMessage(ctx: Context): Promise<boolean> {
@@ -317,14 +343,47 @@ export class TradingBot {
         const text = this.getText(ctx);
         if (!text) return false;
 
+        const user = this.getUser(ctx);
+        if (await this.handleFrogBulkSellQuantityReply(ctx, user, text)) {
+            return true;
+        }
+
         const intent = this.parseIntent(text);
         if (!intent) return false;
 
-        const user = this.getUser(ctx);
+        if (!this.config.spotEnabled && !isBetaIntent(intent)) {
+            await this.replyBetaUnavailable(ctx, user);
+            return true;
+        }
 
         switch (intent.kind) {
+            case "onboarding":
+                if (intent.referralCode) {
+                    await this.replyReferral(ctx, user, {
+                        kind: "referral",
+                        action: "apply",
+                        referralCode: intent.referralCode,
+                    });
+                }
+                await this.replyStart(ctx, user);
+                return true;
             case "menu":
                 await this.replyMainMenu(ctx, user);
+                return true;
+            case "farm":
+                await this.replyFarmerHome(ctx);
+                return true;
+            case "perpsStatus":
+                await this.replyPerpsStatus(ctx, user);
+                return true;
+            case "deltaNeutral":
+                await this.replyDeltaNeutralStatus(ctx, user);
+                return true;
+            case "deltaNeutralStop":
+                await this.replyDeltaNeutralStopReview(ctx, user);
+                return true;
+            case "spotComingSoon":
+                await this.replyBetaUnavailable(ctx, user);
                 return true;
             case "wallet":
                 await this.replyWallet(
@@ -340,17 +399,14 @@ export class TradingBot {
             case "control":
                 await this.replyControl(ctx, user);
                 return true;
+            case "reset":
+                await this.replyResetSetup(ctx, user);
+                return true;
             case "referral":
                 await this.replyReferral(ctx, user, intent);
                 return true;
             case "activity":
                 await this.replyActivity(ctx, user);
-                return true;
-            case "alpha":
-                await this.replyAlpha(ctx, user, intent.action);
-                return true;
-            case "volume":
-                await this.replyVolume(ctx, user, intent.action);
                 return true;
             case "settings":
                 await this.replySettings(ctx, user, intent);
@@ -369,6 +425,25 @@ export class TradingBot {
                 return true;
             case "nfts":
                 await this.replyNftHoldings(ctx, user, intent.page);
+                return true;
+            case "frogBuy":
+                await this.replyFrogBuyReview(ctx, user, 1, intent.maximumSol);
+                return true;
+            case "frogSweep":
+                await this.replyFrogBuyReview(
+                    ctx,
+                    user,
+                    intent.quantity,
+                    intent.maximumSol
+                );
+                return true;
+            case "frogSell":
+                await this.replyFrogSellReview(
+                    ctx,
+                    user,
+                    intent.mint,
+                    intent.minimumSol
+                );
                 return true;
             case "pnl":
                 await this.replyPnl(ctx, user);
@@ -439,7 +514,7 @@ export class TradingBot {
                 await this.replyToken(ctx, user, intent.mint);
                 return true;
             case "help":
-                await this.replyHelp(ctx);
+                await this.replyHelp(ctx, user);
                 return true;
             case "unknown":
                 await this.replyUnknownCommand(ctx, intent.command);
@@ -465,7 +540,169 @@ export class TradingBot {
         }
 
         if (action === "help") {
-            await this.replyHelp(ctx);
+            await this.replyHelp(ctx, user);
+            return true;
+        }
+
+        if (action === "farm") {
+            const currentUser = await this.connectedAccountUser(user);
+            await this.replyFarmSetup(
+                ctx,
+                currentUser,
+                this.hasConnectedAccount(currentUser)
+                    ? "Finish Setup"
+                    : "Connect Account"
+            );
+            return true;
+        }
+
+        if (action === "farmer-home") {
+            await this.replyFarmerHome(ctx);
+            return true;
+        }
+
+        if (action === "farmer-how") {
+            await this.replyFarmerHowItWorks(ctx);
+            return true;
+        }
+
+        if (action === "perps-status") {
+            await this.replyPerpsStatus(ctx, user);
+            return true;
+        }
+
+        if (action === "delta-neutral-review") {
+            await this.replyDeltaNeutralReview(ctx, user);
+            return true;
+        }
+
+        if (action === "delta-neutral-start") {
+            await this.replyDeltaNeutralStart(ctx, user);
+            return true;
+        }
+
+        if (action === "delta-neutral-status") {
+            await this.replyDeltaNeutralStatus(ctx, user);
+            return true;
+        }
+
+        if (action === "delta-neutral-stop-review") {
+            await this.replyDeltaNeutralStopReview(ctx, user);
+            return true;
+        }
+
+        if (action === "delta-neutral-stop-confirm") {
+            await this.replyDeltaNeutralStopConfirmed(ctx, user);
+            return true;
+        }
+
+        if (action === "spot") {
+            await this.replyBetaUnavailable(ctx, user);
+            return true;
+        }
+
+        if (action === "account") {
+            await this.replyAccount(ctx, user);
+            return true;
+        }
+
+        if (action === "control") {
+            await this.replyControl(ctx, user);
+            return true;
+        }
+
+        if (action === "reset") {
+            await this.replyResetSetup(ctx, user);
+            return true;
+        }
+
+        if (action === "reset-confirm") {
+            await this.replyResetSetup(ctx, user);
+            return true;
+        }
+
+        if (action === "reset-cancel") {
+            await ctx.reply(
+                "Reset cancelled.",
+                Markup.inlineKeyboard([
+                    [Markup.button.callback("Menu", "ribbot:menu")],
+                ])
+            );
+            return true;
+        }
+
+        if (action === "referrals") {
+            await this.replyReferral(ctx, user);
+            return true;
+        }
+
+        if (action === "nfts") {
+            await this.replyNftHoldings(
+                ctx,
+                user,
+                parsePositionPageIndex(rest[0]),
+                true
+            );
+            return true;
+        }
+
+        if (action === "nft-detail") {
+            await this.replyNftDetail(
+                ctx,
+                user,
+                parsePositionPageIndex(rest[0])
+            );
+            return true;
+        }
+
+        if (action === "frog-sell-select") {
+            await this.replyNftHoldings(
+                ctx,
+                user,
+                parsePositionPageIndex(rest[0]),
+                true,
+                true
+            );
+            return true;
+        }
+
+        if (action === "frog-buy") {
+            await this.replyFrogBuyReview(ctx, user, 1);
+            return true;
+        }
+
+        if (action === "frog-sweep") {
+            await this.replyFrogBuyReview(ctx, user, Number(rest[0]));
+            return true;
+        }
+
+        if (action === "frog-sell") {
+            await this.replyFrogSellReview(ctx, user, rest[0]);
+            return true;
+        }
+
+        if (action === "frog-bulk-sell") {
+            await this.replyFrogBulkSellQuantityPrompt(ctx, user);
+            return true;
+        }
+
+        if (action === "frog-confirm") {
+            await this.replyFrogTradeConfirmed(ctx, user, rest[0]);
+            return true;
+        }
+
+        if (action === "frog-check") {
+            await this.replyFrogTradeStatus(ctx, user, rest[0]);
+            return true;
+        }
+
+        if (action === "frog-cancel") {
+            await this.replyFrogTradeCancelled(ctx, user, rest[0]);
+            return true;
+        }
+
+        if (!this.config.spotEnabled) {
+            await this.replyBetaUnavailable(ctx, user);
             return true;
         }
 
@@ -485,51 +722,8 @@ export class TradingBot {
             return true;
         }
 
-        if (action === "account") {
-            await this.replyAccount(ctx, user);
-            return true;
-        }
-
-        if (action === "control") {
-            await this.replyControl(ctx, user);
-            return true;
-        }
-
-        if (action === "referrals") {
-            await this.replyReferral(ctx, user);
-            return true;
-        }
-
         if (action === "activity") {
             await this.replyActivity(ctx, user);
-            return true;
-        }
-
-        if (action === "alpha") {
-            await this.replyAlpha(ctx, user, "show");
-            return true;
-        }
-
-        if (action === "alpha-on" || action === "alpha-off") {
-            await this.replyAlpha(
-                ctx,
-                user,
-                action === "alpha-on" ? "on" : "off"
-            );
-            return true;
-        }
-
-        if (action === "volume") {
-            await this.replyVolume(ctx, user, "show");
-            return true;
-        }
-
-        if (action === "volume-on" || action === "volume-off") {
-            await this.replyVolume(
-                ctx,
-                user,
-                action === "volume-on" ? "on" : "off"
-            );
             return true;
         }
 
@@ -540,15 +734,6 @@ export class TradingBot {
 
         if (action === "positions") {
             await this.replyPositions(
-                ctx,
-                user,
-                parsePositionPageIndex(rest[0])
-            );
-            return true;
-        }
-
-        if (action === "nfts") {
-            await this.replyNftHoldings(
                 ctx,
                 user,
                 parsePositionPageIndex(rest[0])
@@ -850,24 +1035,47 @@ export class TradingBot {
             return null;
         }
 
-        if (command === "/start" && isReferralCode(args[0])) {
+        if (command === "/start") {
             return {
-                kind: "referral",
-                action: "apply",
-                referralCode: args[0].toUpperCase(),
+                kind: "onboarding",
+                referralCode: isReferralCode(args[0])
+                    ? args[0].toUpperCase()
+                    : undefined,
             };
         }
-        if (["/start", "/menu", "/trading"].includes(command)) {
+        if (["/menu", "/trading"].includes(command)) {
             return { kind: "menu" };
         }
-        if (["/wallet", "/deposit"].includes(command)) {
+        if (["/farm", "/farming", "/perps"].includes(command)) {
+            return { kind: "farm" };
+        }
+        if (
+            ["/farmer", "/strategy", "/deltaneutral", "/routedarb"].includes(
+                command
+            )
+        ) {
+            return { kind: "deltaNeutral" };
+        }
+        if (["/stopfarming", "/stopfarmer"].includes(command)) {
+            return { kind: "deltaNeutralStop" };
+        }
+        if (command === "/spot") {
+            return { kind: "spotComingSoon" };
+        }
+        if (command === "/wallet") {
             return parseWalletCommand(args);
         }
-        if (["/account", "/status", "/sync"].includes(command)) {
+        if (["/status", "/balance", "/deposit", "/sync"].includes(command)) {
+            return { kind: "perpsStatus" };
+        }
+        if (command === "/account") {
             return { kind: "account" };
         }
         if (["/control", "/manage"].includes(command)) {
             return { kind: "control" };
+        }
+        if (command === "/reset") {
+            return { kind: "reset" };
         }
         if (
             ["/referral", "/referrals", "/rewards", "/reward"].includes(command)
@@ -882,19 +1090,6 @@ export class TradingBot {
         }
         if (["/activity", "/history", "/trades", "/events"].includes(command)) {
             return { kind: "activity" };
-        }
-        if (["/alpha", "/signals", "/hoodalpha"].includes(command)) {
-            const action = args[0]?.toLowerCase();
-            return {
-                kind: "alpha",
-                action: parseAlphaCommandAction(action),
-            };
-        }
-        if (["/volume", "/vol", "/pairs"].includes(command)) {
-            return {
-                kind: "volume",
-                action: parseAlphaCommandAction(args[0]?.toLowerCase()),
-            };
         }
         if (command === "/settings") return parseSettingsIntent(args);
         if (["/positions", "/position"].includes(command)) {
@@ -917,6 +1112,25 @@ export class TradingBot {
                     Number.isInteger(pageValue) && pageValue > 0
                         ? pageValue - 1
                         : 0,
+            };
+        }
+        if (["/buyfrog", "/frogfloor"].includes(command)) {
+            return { kind: "frogBuy", maximumSol: positiveNumber(args[0]) };
+        }
+        if (["/sweepfrogs", "/sweepfrog"].includes(command)) {
+            return {
+                kind: "frogSweep",
+                quantity: positiveInteger(args[0]),
+                maximumSol: positiveNumber(args[1]),
+            };
+        }
+        if (["/sellfrog", "/frogsell"].includes(command)) {
+            return {
+                kind: "frogSell",
+                mint: findMint(args),
+                minimumSol: positiveNumber(
+                    args.find((arg) => !isSolanaMint(arg))
+                ),
             };
         }
         if (["/pnl", "/profit", "/profits"].includes(command)) {
@@ -1078,6 +1292,37 @@ export class TradingBot {
         ctx: Context,
         user: TradingUser
     ): Promise<void> {
+        if (!this.config.spotEnabled) {
+            const currentUser = await this.connectedAccountUser(user);
+            const connected = this.hasConnectedAccount(currentUser);
+            await ctx.reply(
+                RIBBOT_BETA_INTRO,
+                Markup.inlineKeyboard([
+                    ...(connected
+                        ? []
+                        : [
+                              [
+                                  Markup.button.callback(
+                                      "Connect Account",
+                                      "ribbot:farm"
+                                  ),
+                              ],
+                          ]),
+                    [
+                        Markup.button.callback(
+                            "Perps Farmer",
+                            "ribbot:perps-status"
+                        ),
+                        ...(this.config.nftTradingEnabled
+                            ? [Markup.button.callback("Frogs", "ribbot:nfts:0")]
+                            : []),
+                    ],
+                    [Markup.button.callback("Help", "ribbot:help")],
+                ])
+            );
+            return;
+        }
+
         const currentUser = await this.refreshAccountSnapshot(user);
         const walletLine = currentUser.solanaWalletAddress
             ? `Wallet: ${shortAddress(currentUser.solanaWalletAddress)}`
@@ -1104,13 +1349,6 @@ export class TradingBot {
                               "ribbot:watchlist"
                           ),
                           Markup.button.callback("Activity", "ribbot:activity"),
-                      ],
-                      [
-                          Markup.button.callback(
-                              "Robinhood Alpha",
-                              "ribbot:alpha"
-                          ),
-                          Markup.button.callback("Volume", "ribbot:volume"),
                       ],
                       [
                           Markup.button.callback("Settings", "ribbot:settings"),
@@ -1146,13 +1384,6 @@ export class TradingBot {
                       [
                           Markup.button.callback("Orders", "ribbot:orders"),
                           Markup.button.callback("Rewards", "ribbot:referrals"),
-                      ],
-                      [
-                          Markup.button.callback(
-                              "Robinhood Alpha",
-                              "ribbot:alpha"
-                          ),
-                          Markup.button.callback("Volume", "ribbot:volume"),
                       ],
                       [Markup.button.callback("Activity", "ribbot:activity")],
                       [
@@ -1215,6 +1446,13 @@ export class TradingBot {
                 );
                 return;
             }
+            if (wallet.walletSource !== "privy") {
+                await ctx.reply(
+                    "Portfolio wallets are read only. Your Spot & NFT wallet remains active.",
+                    this.walletKeyboard(currentUser)
+                );
+                return;
+            }
             if (wallet.walletId === currentUser.activeWalletId) {
                 await ctx.reply(
                     [
@@ -1270,7 +1508,9 @@ export class TradingBot {
                     currentUser.walletSource === "privy"
                         ? "Fund it with SOL before trading. Keep enough SOL for swaps and network fees."
                         : "Run /wallet again after FTX wallet provisioning is enabled to create a managed trading wallet.",
-                    (currentUser.wallets?.length ?? 0) > 1
+                    (currentUser.wallets?.filter(
+                        (wallet) => wallet.walletSource === "privy"
+                    ).length ?? 0) > 1
                         ? "Use /wallet select <number> or the buttons below to change the active wallet."
                         : "",
                 ].join("\n"),
@@ -1372,10 +1612,13 @@ export class TradingBot {
     }
 
     private walletKeyboard(user?: TradingUser) {
+        const managedWallets = (user?.wallets ?? []).filter(
+            (wallet) => wallet.walletSource === "privy"
+        );
         const walletRows =
-            (user?.wallets?.length ?? 0) > 1
+            managedWallets.length > 1
                 ? chunkButtons(
-                      (user?.wallets ?? []).map((wallet, index) =>
+                      managedWallets.map((wallet, index) =>
                           Markup.button.callback(
                               `${wallet.walletId === user?.activeWalletId ? "Active" : "Use"} ${index + 1}`,
                               `ribbot:wallet-select:${index}`
@@ -1495,6 +1738,18 @@ export class TradingBot {
     }
 
     private async replyAccount(ctx: Context, user: TradingUser): Promise<void> {
+        if (!this.config.spotEnabled) {
+            const currentUser = await this.connectedAccountUser(user);
+            await this.replyFarmSetup(
+                ctx,
+                currentUser,
+                this.hasConnectedAccount(currentUser)
+                    ? "Manage Account"
+                    : "Connect Account"
+            );
+            return;
+        }
+
         if (!this.config.ftxApiToken) {
             await ctx.reply(
                 [
@@ -1595,65 +1850,695 @@ export class TradingBot {
         }
     }
 
+    private async replyFarmerHome(ctx: Context): Promise<void> {
+        await ctx.reply(
+            [
+                "Delta Neutral Farmer",
+                "Powered by Imperial",
+                "",
+                "Runs one matched perps cycle to generate Imperial + Phoenix activity while reducing market-direction exposure.",
+                "",
+                "Beta controls are fixed. You review and confirm every cycle before it starts.",
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback(
+                        "Review & Start",
+                        "ribbot:delta-neutral-review"
+                    ),
+                ],
+                [
+                    Markup.button.callback("How It Works", "ribbot:farmer-how"),
+                    Markup.button.callback(
+                        "Wallet Status",
+                        "ribbot:perps-status"
+                    ),
+                ],
+                [
+                    Markup.button.callback(
+                        "Run Status",
+                        "ribbot:delta-neutral-status"
+                    ),
+                ],
+            ])
+        );
+    }
+
+    private async replyFarmerHowItWorks(ctx: Context): Promise<void> {
+        await ctx.reply(
+            [
+                "How One Cycle Works",
+                "",
+                "1. Ribbot places a small perpetual order on Phoenix through Imperial.",
+                "2. It opens a matching opposite hedge through an Imperial-supported route.",
+                "3. Both legs are intended to generate eligible Imperial + Phoenix activity while offsetting most market-direction exposure.",
+                "4. Ribbot closes both legs and verifies the Imperial profile is flat before the cycle ends.",
+                "",
+                "What to expect",
+                "- One confirmation runs one cycle.",
+                "- A cycle can take several minutes.",
+                "- Two positions may appear briefly.",
+                "- If the first order does not fill, Ribbot cancels it. If only one leg fills, recovery closes the exposure before another cycle.",
+                "- The strategy trades against USDC in your Imperial profile. It does not move funds to a Ribbot-owned wallet.",
+                "",
+                "Fixed beta limits",
+                "- Low preset",
+                "- $60 max entry",
+                "- 1 cycle per confirmation",
+                "- $5 daily cost budget",
+                "",
+                "Risk",
+                "Delta neutral reduces directional exposure; it is not risk-free. Orders execute separately, so temporary exposure is possible. Fees, spread, slippage, funding, liquidation, venue, API, and smart-contract risk remain. Points and rewards depend on Imperial and Phoenix rules and are not guaranteed.",
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback(
+                        "Review & Start",
+                        "ribbot:delta-neutral-review"
+                    ),
+                ],
+                [Markup.button.callback("Back", "ribbot:farmer-home")],
+            ])
+        );
+    }
+
+    private async replyPerpsStatus(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Perps status is unavailable. Try again soon.");
+            return;
+        }
+
+        try {
+            const result = await fetchPerpsStatus({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+
+            if (result.status === "not_configured") {
+                await ctx.reply("Perps status is unavailable. Try again soon.");
+                return;
+            }
+
+            if (result.status === "imperial_reconnect") {
+                await ctx.reply(
+                    [
+                        "Reconnect Imperial to open your farmer.",
+                        "",
+                        "Next: tap Reconnect Imperial.",
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Reconnect Imperial",
+                                "ribbot:farm"
+                            ),
+                        ],
+                    ])
+                );
+                return;
+            }
+
+            if (result.status !== "ready") {
+                await ctx.reply(
+                    [
+                        "Imperial setup is not complete.",
+                        "",
+                        "Next: run /start to finish setup.",
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback("Finish Setup", "ribbot:farm")],
+                    ])
+                );
+                return;
+            }
+
+            if (!result.profileAddress || !result.imperialProfileVerified) {
+                await ctx.reply(
+                    [
+                        "Imperial setup needs attention.",
+                        "",
+                        "Next: run /start to reconnect Imperial.",
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Reconnect Imperial",
+                                "ribbot:farm"
+                            ),
+                        ],
+                    ])
+                );
+                return;
+            }
+
+            const lines = [
+                "Imperial Perps Wallet",
+                result.profileAddress,
+                "",
+                `Balance: ${formatUsdc(result.profileUsdc)} USDC`,
+                `Minimum: ${result.minimumProfileUsdc} USDC`,
+                `Status: ${result.funded ? "Deposit confirmed" : "Deposit required"}`,
+            ];
+
+            if (!result.funded) {
+                lines.push(
+                    "",
+                    `Next: send at least ${result.minimumProfileUsdc} USDC on Solana to the Imperial Perps Wallet above for perps trading.`
+                );
+                await ctx.reply(
+                    lines.join("\n"),
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Refresh",
+                                "ribbot:perps-status"
+                            ),
+                            Markup.button.callback("Menu", "ribbot:menu"),
+                        ],
+                    ])
+                );
+                return;
+            }
+
+            lines.push(
+                "",
+                "Delta Neutral / Routed Arb (Default)",
+                `Status: ${perpsStrategyStatus(result.strategyReady, result.liveExecutionEnabled)}`,
+                "",
+                perpsStrategyNextStep(
+                    result.strategyReady,
+                    result.liveExecutionEnabled
+                )
+            );
+
+            const keyboard = [
+                [
+                    Markup.button.callback(
+                        "Review Strategy",
+                        "ribbot:delta-neutral-review"
+                    ),
+                ],
+            ];
+            keyboard.push([
+                Markup.button.callback("Refresh", "ribbot:perps-status"),
+                Markup.button.callback("Farmer", "ribbot:farmer-home"),
+            ]);
+            await ctx.reply(lines.join("\n"), Markup.inlineKeyboard(keyboard));
+        } catch (error) {
+            logger.warn("FrogX Perps status fetch failed", error);
+            await ctx.reply("Perps status is unavailable. Try again soon.");
+        }
+    }
+
+    private async replyDeltaNeutralReview(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Delta Neutral is unavailable. Try again soon.");
+            return;
+        }
+        try {
+            const result = await previewDeltaNeutral({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (result.status !== "ready") {
+                await this.replyDeltaNeutralUnavailable(ctx);
+                return;
+            }
+
+            const preview = result.preview;
+            const ready = preview.liveReady && result.liveExecutionEnabled;
+            const lines = [
+                "Review Delta Neutral",
+                "",
+                "Strategy: Delta Neutral / Routed Arb",
+                "Preset: Low",
+                "Imperial Perps Wallet",
+                deltaNeutralPerpsWalletLabel(preview),
+                `Balance: ${formatUsdc(preview.profileUsdc)} USDC`,
+                `Max Entry: $${preview.liveEntryCapUsd}`,
+                `Cycles: ${preview.maxCycles}`,
+                "Daily Cost Budget: $5",
+                "",
+                ready
+                    ? "This places live perpetual orders. Tap Start 1 Cycle to confirm."
+                    : deltaNeutralPreviewNextStep(
+                          preview,
+                          result.liveExecutionEnabled
+                      ),
+            ];
+            const keyboard = ready
+                ? [
+                      [
+                          Markup.button.callback(
+                              "Start 1 Cycle",
+                              "ribbot:delta-neutral-start"
+                          ),
+                      ],
+                      [
+                          Markup.button.callback(
+                              "How It Works",
+                              "ribbot:farmer-how"
+                          ),
+                          Markup.button.callback(
+                              "Cancel",
+                              "ribbot:farmer-home"
+                          ),
+                      ],
+                  ]
+                : [
+                      [
+                          Markup.button.callback(
+                              "Refresh",
+                              "ribbot:delta-neutral-review"
+                          ),
+                          Markup.button.callback(
+                              "How It Works",
+                              "ribbot:farmer-how"
+                          ),
+                      ],
+                      [Markup.button.callback("Farmer", "ribbot:farmer-home")],
+                  ];
+            await ctx.reply(lines.join("\n"), Markup.inlineKeyboard(keyboard));
+        } catch (error) {
+            logger.warn("FrogX Delta Neutral review failed", error);
+            await this.replyDeltaNeutralUnavailable(ctx);
+        }
+    }
+
+    private async replyDeltaNeutralStart(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Delta Neutral is unavailable. Try again soon.");
+            return;
+        }
+        try {
+            const preview = await previewDeltaNeutral({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (
+                preview.status !== "ready" ||
+                !preview.preview.liveReady ||
+                !preview.liveExecutionEnabled
+            ) {
+                await ctx.reply(
+                    "Delta Neutral is not ready to start. Check your status first.",
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Check Status",
+                                "ribbot:perps-status"
+                            ),
+                        ],
+                    ])
+                );
+                return;
+            }
+
+            const result = await startDeltaNeutral({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+                idempotencyKey: `delta-neutral:${user.telegramUserId}:${crypto.randomUUID()}`,
+                confirmLive: true,
+            });
+            if (!("idempotent" in result)) {
+                if (result.status === "pending_reconciliation") {
+                    await ctx.reply(
+                        "Delta Neutral is checking the start request. Check Status before trying again.",
+                        Markup.inlineKeyboard([
+                            [
+                                Markup.button.callback(
+                                    "Check Status",
+                                    "ribbot:delta-neutral-status"
+                                ),
+                            ],
+                        ])
+                    );
+                    return;
+                }
+                await ctx.reply(
+                    "Delta Neutral could not start. Check your status and try again.",
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Check Status",
+                                "ribbot:perps-status"
+                            ),
+                        ],
+                    ])
+                );
+                return;
+            }
+            await this.replyDeltaNeutralRun(ctx, result.run);
+        } catch (error) {
+            logger.warn("FrogX Delta Neutral start failed", error);
+            await ctx.reply(
+                "Delta Neutral could not start. Check Status before trying again.",
+                Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback(
+                            "Check Status",
+                            "ribbot:delta-neutral-status"
+                        ),
+                    ],
+                ])
+            );
+        }
+    }
+
+    private async replyDeltaNeutralStatus(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Delta Neutral is unavailable. Try again soon.");
+            return;
+        }
+        try {
+            const result = await fetchDeltaNeutralStatus({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (result.status !== "ready") {
+                await this.replyDeltaNeutralUnavailable(ctx);
+                return;
+            }
+            if (!result.run) {
+                await ctx.reply(
+                    [
+                        "Delta Neutral / Routed Arb",
+                        "Status: Not started",
+                        "",
+                        "Next: review the strategy to start one cycle.",
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Review Strategy",
+                                "ribbot:delta-neutral-review"
+                            ),
+                        ],
+                        [Markup.button.callback("Menu", "ribbot:menu")],
+                    ])
+                );
+                return;
+            }
+            await this.replyDeltaNeutralRun(ctx, result.run);
+        } catch (error) {
+            logger.warn("FrogX Delta Neutral status failed", error);
+            await this.replyDeltaNeutralUnavailable(ctx);
+        }
+    }
+
+    private async replyDeltaNeutralStopReview(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Delta Neutral is unavailable. Try again soon.");
+            return;
+        }
+        try {
+            const result = await fetchDeltaNeutralStatus({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (
+                result.status !== "ready" ||
+                !result.run ||
+                !deltaNeutralRunIsActive(result.run)
+            ) {
+                await ctx.reply(
+                    "Delta Neutral has no active run.",
+                    Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback(
+                                "Check Status",
+                                "ribbot:delta-neutral-status"
+                            ),
+                        ],
+                    ])
+                );
+                return;
+            }
+            await ctx.reply(
+                [
+                    "Stop Delta Neutral?",
+                    "",
+                    "Ribbot will stop new activity and clean up any open strategy position.",
+                ].join("\n"),
+                Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback(
+                            "Stop Strategy",
+                            "ribbot:delta-neutral-stop-confirm"
+                        ),
+                    ],
+                    [
+                        Markup.button.callback(
+                            "Keep Running",
+                            "ribbot:delta-neutral-status"
+                        ),
+                    ],
+                ])
+            );
+        } catch (error) {
+            logger.warn("FrogX Delta Neutral stop review failed", error);
+            await this.replyDeltaNeutralUnavailable(ctx);
+        }
+    }
+
+    private async replyDeltaNeutralStopConfirmed(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Delta Neutral is unavailable. Try again soon.");
+            return;
+        }
+        try {
+            const result = await stopDeltaNeutral({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (!("run" in result) || "error" in result) {
+                await this.replyDeltaNeutralUnavailable(ctx);
+                return;
+            }
+            await this.replyDeltaNeutralRun(ctx, result.run);
+        } catch (error) {
+            logger.warn("FrogX Delta Neutral stop failed", error);
+            await ctx.reply(
+                "Delta Neutral could not confirm the stop request. Check Status before trying again.",
+                Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback(
+                            "Check Status",
+                            "ribbot:delta-neutral-status"
+                        ),
+                    ],
+                ])
+            );
+        }
+    }
+
+    private async replyDeltaNeutralRun(
+        ctx: Context,
+        run: DeltaNeutralRun
+    ): Promise<void> {
+        const active = deltaNeutralRunIsActive(run);
+        const lines = [
+            "Delta Neutral / Routed Arb",
+            `Status: ${deltaNeutralRunLabel(run)}`,
+            `Wallet: ${run.wallet}`,
+        ];
+        if ("completedCycles" in run) {
+            lines.push(
+                `Cycles: ${run.completedCycles} / ${run.maxCycles}`,
+                `Volume: $${formatUsdc(run.completedVolumeUsd)}`,
+                `Estimated Cost: $${formatUsdc(run.estimatedRunCostUsd)}`
+            );
+            if (run.lastMessage) lines.push("", run.lastMessage);
+        }
+        const keyboard = [
+            [
+                Markup.button.callback(
+                    "Refresh",
+                    "ribbot:delta-neutral-status"
+                ),
+                Markup.button.callback("Menu", "ribbot:menu"),
+            ],
+        ];
+        if (active) {
+            keyboard.unshift([
+                Markup.button.callback(
+                    "Stop",
+                    "ribbot:delta-neutral-stop-review"
+                ),
+            ]);
+        } else {
+            keyboard.unshift([
+                Markup.button.callback(
+                    "Review New Cycle",
+                    "ribbot:delta-neutral-review"
+                ),
+            ]);
+        }
+        await ctx.reply(lines.join("\n"), Markup.inlineKeyboard(keyboard));
+    }
+
+    private async replyDeltaNeutralUnavailable(ctx: Context): Promise<void> {
+        await ctx.reply(
+            "Delta Neutral is unavailable right now. Check again soon.",
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback(
+                        "Check Status",
+                        "ribbot:perps-status"
+                    ),
+                    Markup.button.callback("Menu", "ribbot:menu"),
+                ],
+            ])
+        );
+    }
+
     private async replyControl(ctx: Context, user: TradingUser): Promise<void> {
+        await this.replyFarmSetup(ctx, user, "Manage Account");
+    }
+
+    private async replyResetSetup(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        if (!this.config.ftxApiToken) {
+            await ctx.reply("Reset is unavailable. Try again soon.");
+            return;
+        }
+
+        try {
+            const result = await resetTradingSetup({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+            });
+            if (result.status === "not_configured") {
+                await ctx.reply("Reset is unavailable. Try again soon.");
+                return;
+            }
+
+            await ctx.reply(
+                [
+                    "Ribbot reset.",
+                    "",
+                    "Your wallet is unchanged.",
+                    "",
+                    "Next: /start",
+                ].join("\n")
+            );
+        } catch (error) {
+            logger.warn("FrogX setup reset failed", error);
+            await ctx.reply("Reset failed. Try again.");
+        }
+    }
+
+    private async replyFarmSetup(
+        ctx: Context,
+        user: TradingUser,
+        buttonLabel:
+            | "Connect Account"
+            | "Finish Setup"
+            | "Manage Account" = "Connect Account"
+    ): Promise<void> {
         if (!this.config.ftxApiToken) {
             await ctx.reply(
                 [
-                    "FTX/FrogX account control is not configured in Ribbot yet.",
+                    "Frog Trading Exchange account setup is not configured in Ribbot yet.",
                     "",
-                    "Ribbot needs RIBBOT_FTX_API_TOKEN so FTX can issue a short-lived account-control code.",
-                    "Privy app secrets and signer keys still belong only in FTX.",
+                    "Ribbot needs its Frog Trading Exchange connection before it can create an account session.",
                 ].join("\n")
             );
             return;
         }
 
         try {
-            const result = await requestControlCode({
+            const wallet = await provisionTradingWallet({
                 frogxApiBaseUrl: this.config.frogxApiBaseUrl,
                 ftxApiToken: this.config.ftxApiToken,
                 telegramUserId: user.telegramUserId,
                 username: user.username,
             });
+            if (wallet.status === "not_configured") {
+                await ctx.reply("Setup is unavailable. Try again soon.");
+                return;
+            }
+            if (wallet.walletSource !== "privy") {
+                await ctx.reply("Setup is unavailable. Try again soon.");
+                return;
+            }
+            let updatedUser = this.store.setPrivyWallet(user, wallet);
+            if (wallet.account) {
+                updatedUser = this.store.syncAccountSnapshot(
+                    updatedUser,
+                    wallet.account
+                );
+            }
+
+            const result = await requestControlCode({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: updatedUser.telegramUserId,
+                username: updatedUser.username,
+            });
 
             if (result.status === "not_configured") {
                 await ctx.reply(
                     [
-                        "FTX/FrogX account control is not configured yet.",
+                        "Frog Trading Exchange account setup is not configured yet.",
                         `Missing: ${(result.required ?? []).join(", ") || "unknown"}`,
                         "",
-                        "No control session was created.",
+                        "No Frog Trading Exchange account session was created.",
                     ].join("\n")
                 );
                 return;
             }
 
             const controlHref = result.controlUrl
-                ? controlUrlWithTelegramId(
+                ? controlUrlWithSession(
                       result.controlUrl,
-                      result.telegramUserId
+                      result.telegramUserId,
+                      result.code
                   )
                 : undefined;
-            const lines = [
-                "FTX/FrogX account control code",
-                result.code,
-                `Telegram ID: ${result.telegramUserId}`,
-                "",
-                `Expires: ${result.expiresAt}`,
-                controlHref
-                    ? `Open: ${controlHref}`
-                    : "Control page URL is not configured yet.",
-                "",
-                "This starts a short-lived FTX account-control session.",
-                "Privy verifies the same Telegram account before wallet export or signer changes. FTX and Ribbot never receive the exported key.",
-            ];
+            const lines = controlHref
+                ? [RIBBOT_BETA_INTRO]
+                : [
+                      RIBBOT_BETA_INTRO,
+                      "",
+                      "Enter this code on Frog Trading Exchange:",
+                      `Code: ${result.code}`,
+                      `Expires: ${result.expiresAt}`,
+                  ];
 
             if (controlHref) {
                 await ctx.reply(
                     lines.join("\n"),
                     Markup.inlineKeyboard([
-                        [Markup.button.login("Open FTX Control", controlHref)],
-                        [Markup.button.callback("Menu", "ribbot:menu")],
+                        [Markup.button.url(buttonLabel, controlHref)],
                     ])
                 );
                 return;
@@ -1667,10 +2552,64 @@ export class TradingBot {
             );
         } catch (error) {
             logger.warn("FTX/FrogX control code request failed", error);
-            await ctx.reply(
-                "FTX/FrogX could not create a control code right now. No account session was opened."
-            );
+            await ctx.reply("Setup failed. Try again.");
         }
+    }
+
+    private async replyStart(ctx: Context, user: TradingUser): Promise<void> {
+        if (this.config.ftxApiToken) {
+            try {
+                const result = await fetchTradingAccount({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                    ftxApiToken: this.config.ftxApiToken,
+                    telegramUserId: user.telegramUserId,
+                });
+                if (result.status === "ready") {
+                    if (result.setup?.complete !== true) {
+                        await this.replyFarmSetup(ctx, user, "Finish Setup");
+                        return;
+                    }
+
+                    const readyLines = [
+                        "Ribbot is ready.",
+                        "",
+                        "/farm - open your Delta Neutral farmer",
+                        "Powered by Imperial",
+                        ...(this.config.nftTradingEnabled
+                            ? [
+                                  "",
+                                  "/frogs - view and trade Solana Business Frogs",
+                                  "Powered by Magic Eden",
+                              ]
+                            : []),
+                    ];
+                    await ctx.reply(
+                        readyLines.join("\n"),
+                        Markup.inlineKeyboard([
+                            [
+                                Markup.button.callback(
+                                    "Farm",
+                                    "ribbot:farmer-home"
+                                ),
+                                ...(this.config.nftTradingEnabled
+                                    ? [
+                                          Markup.button.callback(
+                                              "Frogs",
+                                              "ribbot:nfts:0"
+                                          ),
+                                      ]
+                                    : []),
+                            ],
+                        ])
+                    );
+                    return;
+                }
+            } catch (error) {
+                logger.warn("FrogX start status check failed", error);
+            }
+        }
+
+        await this.replyFarmSetup(ctx, user);
     }
 
     private async replyReferral(
@@ -1862,7 +2801,9 @@ export class TradingBot {
     private async replyNftHoldings(
         ctx: Context,
         user: TradingUser,
-        requestedPage = 0
+        requestedPage = 0,
+        editCurrentMessage = false,
+        sellSelection = false
     ): Promise<void> {
         try {
             const holdings = await fetchNftHoldings({
@@ -1870,7 +2811,7 @@ export class TradingBot {
                 ftxApiToken: this.config.ftxApiToken,
                 telegramUserId: user.telegramUserId,
                 page: Math.max(0, requestedPage) + 1,
-                limit: 5,
+                limit: FROG_CONTACT_SHEET_PAGE_SIZE,
             });
 
             if (holdings.status !== "ready") {
@@ -1903,61 +2844,151 @@ export class TradingBot {
             );
             const pageIndex = Math.max(0, holdings.page - 1);
             if (holdings.total > 0 && pageIndex >= totalPages) {
-                await this.replyNftHoldings(ctx, user, totalPages - 1);
+                await this.replyNftHoldings(
+                    ctx,
+                    user,
+                    totalPages - 1,
+                    editCurrentMessage,
+                    sellSelection
+                );
                 return;
             }
 
-            const itemLines =
-                holdings.items.length > 0
-                    ? holdings.items.flatMap((nft, index) =>
-                          this.nftHoldingLines(
-                              nft,
-                              pageIndex * holdings.limit + index + 1
-                          )
-                      )
-                    : ["No NFTs are held by this active wallet."];
-            const navigationButtons = [
-                ...(pageIndex > 0
+            const navigationButtons =
+                totalPages > 1
                     ? [
                           Markup.button.callback(
-                              "Prev",
-                              `ribbot:nfts:${pageIndex - 1}`
+                              "←",
+                              `ribbot:${sellSelection ? "frog-sell-select" : "nfts"}:${pageIndex === 0 ? totalPages - 1 : pageIndex - 1}`
                           ),
-                      ]
-                    : []),
-                ...(pageIndex < totalPages - 1
-                    ? [
                           Markup.button.callback(
-                              "Next",
-                              `ribbot:nfts:${pageIndex + 1}`
+                              "→",
+                              `ribbot:${sellSelection ? "frog-sell-select" : "nfts"}:${pageIndex === totalPages - 1 ? 0 : pageIndex + 1}`
                           ),
                       ]
-                    : []),
-            ];
+                    : [];
+            const managedFrogs = holdings.items.filter(
+                (frog) => frog.owner === holdings.walletAddress
+            );
+            const frogButtons = managedFrogs.map((frog) =>
+                Markup.button.callback(
+                    frogDisplayName(frog.name),
+                    `ribbot:frog-sell:${frog.mint}`
+                )
+            );
+            const frogButtonRows = Array.from(
+                { length: Math.ceil(frogButtons.length / 3) },
+                (_, index) => frogButtons.slice(index * 3, index * 3 + 3)
+            );
             const keyboard = Markup.inlineKeyboard([
                 ...(navigationButtons.length ? [navigationButtons] : []),
-                [
-                    Markup.button.callback(
-                        "Refresh",
-                        `ribbot:nfts:${pageIndex}`
-                    ),
-                    Markup.button.callback("Wallet", "ribbot:wallet"),
-                ],
-                [Markup.button.callback("Menu", "ribbot:menu")],
+                ...(this.config.nftTradingEnabled && sellSelection
+                    ? [
+                          ...frogButtonRows,
+                          [
+                              Markup.button.callback(
+                                  "Cancel",
+                                  `ribbot:nfts:${pageIndex}`
+                              ),
+                          ],
+                      ]
+                    : []),
+                ...(this.config.nftTradingEnabled && !sellSelection
+                    ? [
+                          ...(managedFrogs.length > 0
+                              ? [
+                                    [
+                                        Markup.button.callback(
+                                            "Sell 1",
+                                            `ribbot:frog-sell-select:${pageIndex}`
+                                        ),
+                                        Markup.button.callback(
+                                            "Bulk Sell",
+                                            "ribbot:frog-bulk-sell"
+                                        ),
+                                    ],
+                                ]
+                              : []),
+                      ]
+                    : []),
+                ...(this.config.nftTradingEnabled && !sellSelection
+                    ? [
+                          [
+                              Markup.button.callback(
+                                  "Buy Floor",
+                                  "ribbot:frog-buy"
+                              ),
+                              Markup.button.callback(
+                                  "Sweep 2",
+                                  "ribbot:frog-sweep:2"
+                              ),
+                              Markup.button.callback(
+                                  "Sweep 5",
+                                  "ribbot:frog-sweep:5"
+                              ),
+                              Markup.button.callback(
+                                  "Sweep 10",
+                                  "ribbot:frog-sweep:10"
+                              ),
+                          ],
+                      ]
+                    : []),
+                ...(!sellSelection
+                    ? [[Markup.button.callback("Back", "ribbot:menu")]]
+                    : []),
             ]);
             const text = [
-                `Solana Business Frogs · ${pageIndex + 1}/${totalPages}`,
-                `Embedded wallets: ${holdings.walletAddresses.length}`,
-                `Total: ${holdings.total}`,
-                "",
-                ...itemLines,
+                "Solana Business Frogs",
+                `Owned: ${holdings.total}`,
+                ...(totalPages > 1
+                    ? [`Page ${pageIndex + 1}/${totalPages}`]
+                    : []),
+                ...(sellSelection ? ["", "Select a Frog to sell."] : []),
+                ...(holdings.total === 0 ? ["", "No Frogs found."] : []),
             ].join("\n");
-            const previewImage = holdings.items.find((nft) => nft.image)?.image;
+            const contactSheet =
+                holdings.items.length > 0
+                    ? await buildFrogContactSheet(
+                          holdings.items.map((frog) => ({
+                              label: frogDisplayName(frog.name),
+                              image: frog.image,
+                          }))
+                      )
+                    : undefined;
 
-            if (previewImage) {
+            if (editCurrentMessage) {
+                try {
+                    if (contactSheet) {
+                        await ctx.editMessageMedia(
+                            {
+                                type: "photo",
+                                media: Input.fromBuffer(
+                                    contactSheet,
+                                    `frogs-${pageIndex + 1}.png`
+                                ),
+                                caption: text,
+                            },
+                            keyboard
+                        );
+                    } else {
+                        await ctx.editMessageText(text, keyboard);
+                    }
+                } catch (error) {
+                    logger.warn(
+                        "Telegram could not update the Frog panel",
+                        error
+                    );
+                }
+                return;
+            }
+
+            if (contactSheet) {
                 try {
                     await ctx.replyWithPhoto(
-                        { url: previewImage },
+                        Input.fromBuffer(
+                            contactSheet,
+                            `frogs-${pageIndex + 1}.png`
+                        ),
                         { caption: text, ...keyboard }
                     );
                     return;
@@ -1979,14 +3010,946 @@ export class TradingBot {
         }
     }
 
-    private nftHoldingLines(nft: NftHolding, index: number): string[] {
-        const rawName = nft.name.trim() || "Untitled NFT";
-        const name =
-            rawName.length > 48 ? `${rawName.slice(0, 45)}...` : rawName;
-        return [
-            `${index}. ${name}`,
-            `   ${shortAddress(nft.mint)} · wallet ${shortAddress(nft.owner)}${nft.compressed ? " · compressed" : ""}`,
-        ];
+    private async replyNftDetail(
+        ctx: Context,
+        user: TradingUser,
+        itemIndex: number
+    ): Promise<void> {
+        try {
+            const holdings = await fetchNftHoldings({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+                page: itemIndex + 1,
+                limit: 1,
+            });
+            if (holdings.status !== "ready" || !holdings.items[0]) {
+                await ctx.reply(
+                    "That Frog is no longer in your portfolio.",
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback("Frogs", "ribbot:nfts:0")],
+                    ])
+                );
+                return;
+            }
+
+            const frog = holdings.items[0];
+            const pageIndex = Math.floor(
+                itemIndex / FROG_CONTACT_SHEET_PAGE_SIZE
+            );
+            const managed = frog.owner === holdings.walletAddress;
+            const keyboard = Markup.inlineKeyboard([
+                ...(this.config.nftTradingEnabled && managed
+                    ? [
+                          [
+                              Markup.button.callback(
+                                  `Sell ${frogDisplayName(frog.name)}`,
+                                  `ribbot:frog-sell:${frog.mint}`
+                              ),
+                          ],
+                      ]
+                    : []),
+                [
+                    Markup.button.callback(
+                        "Back to Grid",
+                        `ribbot:nfts:${pageIndex}`
+                    ),
+                ],
+            ]);
+            const caption = [
+                frogDisplayName(frog.name),
+                ...(!managed ? ["Read-only wallet"] : []),
+            ].join("\n");
+            const media = frog.image
+                ? frog.image
+                : Input.fromBuffer(
+                      await buildFrogContactSheet([
+                          {
+                              label: frogDisplayName(frog.name),
+                              image: null,
+                          },
+                      ]),
+                      `${frogDisplayName(frog.name).replace("#", "frog-")}.png`
+                  );
+            await ctx.editMessageMedia(
+                { type: "photo", media, caption },
+                keyboard
+            );
+        } catch (error) {
+            logger.warn("Telegram could not open the Frog detail", error);
+            await ctx.reply(
+                "That Frog could not be opened. Try again.",
+                Markup.inlineKeyboard([
+                    [Markup.button.callback("Frogs", "ribbot:nfts:0")],
+                ])
+            );
+        }
+    }
+
+    private async replyFrogBuyReview(
+        ctx: Context,
+        user: TradingUser,
+        requestedQuantity = 1,
+        maximumSol?: number
+    ): Promise<void> {
+        if (!this.config.nftTradingEnabled) {
+            await ctx.reply(
+                "Frog trading is not enabled yet.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        const quantity = Number.isInteger(requestedQuantity)
+            ? Math.min(Math.max(requestedQuantity, 1), 10)
+            : 1;
+        const currentUser = await this.refreshAccountSnapshot(user);
+        const walletAddress = currentUser.solanaWalletAddress;
+        if (!walletAddress || currentUser.walletSource !== "privy") {
+            await ctx.reply(
+                "Connect your Frog Trading Exchange account first.",
+                this.linkWalletKeyboard()
+            );
+            return;
+        }
+        try {
+            const market = await fetchFrogMarket({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: currentUser.telegramUserId,
+                walletAddress,
+            });
+            if (market.status !== "ready") {
+                await ctx.reply(market.error, this.menuKeyboard());
+                return;
+            }
+            const usesSweepTolerance = quantity > 1 && maximumSol === undefined;
+            const maximumPaymentLamports =
+                maximumSol !== undefined
+                    ? solToLamports(maximumSol)
+                    : usesSweepTolerance
+                      ? addBasisPoints(
+                            market.floor.priceLamports,
+                            currentUser.settings.slippageBps
+                        )
+                      : market.floor.priceLamports;
+            if (
+                BigInt(maximumPaymentLamports) <
+                BigInt(market.floor.priceLamports)
+            ) {
+                await ctx.reply(
+                    `Floor is ${formatSol(market.floor.priceSol)} SOL, above your ${formatSol(maximumSol ?? 0)} SOL limit.`,
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            const ticket = this.store.createFrogTradeTicket(currentUser, {
+                side: quantity === 1 ? "buy" : "sweep",
+                walletAddress,
+                quantity,
+                maximumPaymentLamports,
+                ...(quantity === 1 ? { expectedMint: market.floor.mint } : {}),
+            });
+            const caption = [
+                quantity === 1
+                    ? `Buy Frog ${frogDisplayName(market.floor.name)}?`
+                    : `Sweep ${quantity} Frogs?`,
+                `Live floor: ${formatSol(market.floor.priceSol)} SOL`,
+                `Maximum per Frog: ${formatLamportsAsSol(maximumPaymentLamports)} SOL${
+                    usesSweepTolerance
+                        ? ` (${formatSol(currentUser.settings.slippageBps / 100)}% above floor)`
+                        : ""
+                }`,
+                "",
+                quantity === 1
+                    ? "Ribbot buys this exact Frog or stops if it is no longer the live floor."
+                    : `Pictured: current floor ${frogDisplayName(market.floor.name)}. Ribbot buys from the live floor one at a time.`,
+            ].join("\n");
+            const keyboard = this.frogConfirmationKeyboard(ticket.id);
+            if (market.floor.image) {
+                try {
+                    await ctx.replyWithPhoto(
+                        { url: market.floor.image },
+                        { caption, ...keyboard }
+                    );
+                    return;
+                } catch (error) {
+                    logger.warn(
+                        "Telegram rejected the floor Frog image; using text",
+                        error
+                    );
+                }
+            }
+            await ctx.reply(caption, keyboard);
+        } catch (error) {
+            logger.warn("Magic Eden Frog buy review failed", error);
+            await ctx.reply(
+                "The live Frog floor is unavailable. Try again.",
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private async replyFrogSellReview(
+        ctx: Context,
+        user: TradingUser,
+        mint?: string,
+        minimumSol?: number
+    ): Promise<void> {
+        if (!this.config.nftTradingEnabled) {
+            await ctx.reply(
+                "Frog trading is not enabled yet.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        if (!mint || !isSolanaMint(mint)) {
+            await ctx.reply(
+                "Choose a Frog from /frogs or use /sellfrog <mint>.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        const currentUser = await this.refreshAccountSnapshot(user);
+        const walletAddress = currentUser.solanaWalletAddress;
+        if (!walletAddress || currentUser.walletSource !== "privy") {
+            await ctx.reply(
+                "Connect your Frog Trading Exchange account first.",
+                this.linkWalletKeyboard()
+            );
+            return;
+        }
+        try {
+            const [topOffer, holdings] = await Promise.all([
+                fetchFrogTopOffer({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                }),
+                fetchNftHoldings({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                    ftxApiToken: this.config.ftxApiToken,
+                    telegramUserId: currentUser.telegramUserId,
+                    page: 1,
+                    limit: 50,
+                }),
+            ]);
+            if (holdings.status !== "ready") {
+                await ctx.reply(
+                    "Frog ownership could not be verified.",
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            if (
+                !holdings.items.some(
+                    (nft) => nft.mint === mint && nft.owner === walletAddress
+                )
+            ) {
+                await ctx.reply(
+                    "That Frog is not in your managed Spot & NFT wallet.",
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            if (topOffer.status !== "ready") {
+                await ctx.reply(topOffer.error, this.menuKeyboard());
+                return;
+            }
+            const offer = topOffer.offer;
+            const minimumPaymentLamports = minimumSol
+                ? solToLamports(minimumSol)
+                : offer.minimumPaymentLamports;
+            if (
+                BigInt(offer.minimumPaymentLamports) <
+                BigInt(minimumPaymentLamports)
+            ) {
+                await ctx.reply(
+                    `Top offer is ${formatSol(offer.minimumPaymentSol)} SOL, below your ${formatSol(minimumSol ?? 0)} SOL minimum.`,
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            const ticket = this.store.createFrogTradeTicket(currentUser, {
+                side: "sell",
+                walletAddress,
+                quantity: 1,
+                minimumPaymentLamports,
+                mint,
+                name: frogDisplayName(
+                    holdings.items.find(
+                        (nft) =>
+                            nft.mint === mint && nft.owner === walletAddress
+                    )?.name
+                ),
+            });
+            await ctx.reply(
+                [
+                    `Sell ${ticket.name} into the top Magic Eden offer?`,
+                    `You receive at least: ${formatLamportsAsSol(minimumPaymentLamports)} SOL`,
+                    "",
+                    "Ribbot verifies the live offer and ownership again before signing.",
+                ].join("\n"),
+                this.frogConfirmationKeyboard(ticket.id)
+            );
+        } catch (error) {
+            logger.warn("Magic Eden Frog sell review failed", error);
+            await ctx.reply(
+                "The top Magic Eden offer is unavailable. Try again.",
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private async replyFrogBulkSellQuantityPrompt(
+        ctx: Context,
+        user: TradingUser,
+        message = "How many Frogs do you want to sell?"
+    ): Promise<void> {
+        this.pendingFrogBulkSellPrompts.set(
+            user.telegramUserId,
+            Date.now() + FROG_BULK_SELL_PROMPT_TTL_MS
+        );
+        await ctx.reply(
+            [message, "", "Send a whole number."].join("\n"),
+            Markup.forceReply()
+        );
+    }
+
+    private async handleFrogBulkSellQuantityReply(
+        ctx: Context,
+        user: TradingUser,
+        text: string
+    ): Promise<boolean> {
+        const expiresAt = this.pendingFrogBulkSellPrompts.get(
+            user.telegramUserId
+        );
+        if (!expiresAt) return false;
+        if (expiresAt <= Date.now()) {
+            this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+            return false;
+        }
+        if (text.trim().startsWith("/")) {
+            this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+            return false;
+        }
+        const requestedQuantity = Number(text.trim());
+        if (
+            !/^\d+$/.test(text.trim()) ||
+            !Number.isSafeInteger(requestedQuantity) ||
+            requestedQuantity < 1
+        ) {
+            await this.replyFrogBulkSellQuantityPrompt(
+                ctx,
+                user,
+                "Enter a quantity of 1 or more."
+            );
+            return true;
+        }
+
+        this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+        await this.replyFrogBulkSellReview(ctx, user, requestedQuantity);
+        return true;
+    }
+
+    private async replyFrogBulkSellReview(
+        ctx: Context,
+        user: TradingUser,
+        requestedQuantity: number
+    ): Promise<void> {
+        if (!this.config.nftTradingEnabled) {
+            await ctx.reply(
+                "Frog trading is not enabled yet.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        const currentUser = await this.refreshAccountSnapshot(user);
+        const walletAddress = currentUser.solanaWalletAddress;
+        if (!walletAddress || currentUser.walletSource !== "privy") {
+            await ctx.reply(
+                "Connect your Frog Trading Exchange account first.",
+                this.linkWalletKeyboard()
+            );
+            return;
+        }
+        try {
+            const [topOffer, firstHoldingsPage] = await Promise.all([
+                fetchFrogTopOffer({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                }),
+                fetchNftHoldings({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                    ftxApiToken: this.config.ftxApiToken,
+                    telegramUserId: currentUser.telegramUserId,
+                    page: 1,
+                    limit: 50,
+                }),
+            ]);
+            if (firstHoldingsPage.status !== "ready") {
+                await ctx.reply(
+                    "Frog ownership could not be verified.",
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            const holdingsItems = [...firstHoldingsPage.items];
+            const holdingsPageCount = Math.ceil(
+                firstHoldingsPage.total / firstHoldingsPage.limit
+            );
+            for (let page = 2; page <= holdingsPageCount; page += 1) {
+                const holdingsPage = await fetchNftHoldings({
+                    frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                    ftxApiToken: this.config.ftxApiToken,
+                    telegramUserId: currentUser.telegramUserId,
+                    page,
+                    limit: firstHoldingsPage.limit,
+                });
+                if (holdingsPage.status !== "ready") {
+                    await ctx.reply(
+                        "Frog ownership could not be verified.",
+                        this.menuKeyboard()
+                    );
+                    return;
+                }
+                holdingsItems.push(...holdingsPage.items);
+            }
+            const seenMints = new Set<string>();
+            const managedFrogs = holdingsItems.flatMap((nft) => {
+                if (nft.owner !== walletAddress || seenMints.has(nft.mint)) {
+                    return [];
+                }
+                seenMints.add(nft.mint);
+                return [
+                    {
+                        mint: nft.mint,
+                        name: frogDisplayName(nft.name),
+                    },
+                ];
+            });
+            if (managedFrogs.length === 0) {
+                await ctx.reply(
+                    "No Frogs are available to sell.",
+                    this.menuKeyboard()
+                );
+                return;
+            }
+            if (requestedQuantity > managedFrogs.length) {
+                await this.replyFrogBulkSellQuantityPrompt(
+                    ctx,
+                    currentUser,
+                    `You have ${managedFrogs.length} Frogs available in your Spot & NFT wallet.`
+                );
+                return;
+            }
+            if (topOffer.status !== "ready") {
+                await ctx.reply(topOffer.error, this.menuKeyboard());
+                return;
+            }
+            const selectedFrogs = managedFrogs.slice(0, requestedQuantity);
+            const minimumPaymentLamports =
+                topOffer.offer.minimumPaymentLamports;
+            const ticket = this.store.createFrogTradeTicket(currentUser, {
+                side: "bulk_sell",
+                walletAddress,
+                quantity: selectedFrogs.length,
+                minimumPaymentLamports,
+                mints: selectedFrogs.map((frog) => frog.mint),
+                names: selectedFrogs.map((frog) => frog.name),
+            });
+            await ctx.reply(
+                [
+                    `Sell ${selectedFrogs.length} Frogs into live Magic Eden offers?`,
+                    `Frogs: ${selectedFrogs.map((frog) => frog.name).join(", ")}`,
+                    `Minimum per Frog: ${formatLamportsAsSol(minimumPaymentLamports)} SOL`,
+                    "",
+                    "Ribbot sells one at a time and stops if the offer drops below this price.",
+                ].join("\n"),
+                this.frogConfirmationKeyboard(ticket.id)
+            );
+        } catch (error) {
+            logger.warn("Magic Eden Frog bulk sell review failed", error);
+            await ctx.reply(
+                "The top Magic Eden offer is unavailable. Try again.",
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private frogConfirmationKeyboard(ticketId: string) {
+        return Markup.inlineKeyboard([
+            [
+                Markup.button.callback(
+                    "Confirm",
+                    `ribbot:frog-confirm:${ticketId}`
+                ),
+                Markup.button.callback(
+                    "Cancel",
+                    `ribbot:frog-cancel:${ticketId}`
+                ),
+            ],
+        ]);
+    }
+
+    private frogStatusKeyboard(ticketId: string) {
+        return Markup.inlineKeyboard([
+            [
+                Markup.button.callback(
+                    "Check Status",
+                    `ribbot:frog-check:${ticketId}`
+                ),
+            ],
+        ]);
+    }
+
+    private async replyFrogTradeConfirmed(
+        ctx: Context,
+        user: TradingUser,
+        ticketId?: string
+    ): Promise<void> {
+        if (!this.config.nftTradingEnabled || !ticketId) {
+            await this.replyUnknownAction(ctx);
+            return;
+        }
+        const ticket = this.store.getFrogTradeTicket(user, ticketId);
+        if (!ticket) {
+            await ctx.reply(
+                "Frog trade ticket not found.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        if (ticket.status !== "pending_confirmation") {
+            await ctx.reply(
+                "This Frog trade was already handled.",
+                ticket.status === "execution_pending" ||
+                    ticket.status === "partially_executed"
+                    ? this.frogStatusKeyboard(ticket.id)
+                    : this.menuKeyboard()
+            );
+            return;
+        }
+        if (Date.parse(ticket.expiresAt) <= Date.now()) {
+            this.store.updateFrogTradeTicket(user, ticket.id, {
+                status: "cancelled",
+                error: "Confirmation expired",
+            });
+            await ctx.reply(
+                "Quote expired. Open /frogs for a fresh price.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        await this.submitFrogTrade(ctx, user, ticket);
+    }
+
+    private async submitFrogTrade(
+        ctx: Context,
+        user: TradingUser,
+        ticket: FrogTradeTicket
+    ): Promise<void> {
+        const executionId = `${ticket.id}-${ticket.completed + 1}`;
+        const isSell = ticket.side === "sell" || ticket.side === "bulk_sell";
+        const sellMint =
+            ticket.side === "bulk_sell"
+                ? ticket.mints?.[ticket.completed]
+                : ticket.mint;
+        if (isSell && !sellMint) {
+            this.store.updateFrogTradeTicket(user, ticket.id, {
+                status: ticket.completed > 0 ? "partially_executed" : "failed",
+                error: "Frog sale is missing its mint.",
+            });
+            await ctx.reply(
+                "Frog sale could not be prepared.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        this.store.updateFrogTradeTicket(user, ticket.id, {
+            status:
+                ticket.completed > 0
+                    ? "partially_executed"
+                    : "execution_pending",
+            currentExecutionId: executionId,
+            error: undefined,
+        });
+        try {
+            const result = isSell
+                ? await executeFrogSell({
+                      frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                      ftxApiToken: this.config.ftxApiToken,
+                      telegramUserId: user.telegramUserId,
+                      walletAddress: ticket.walletAddress,
+                      executionId,
+                      mint: sellMint as string,
+                      minimumPaymentLamports:
+                          ticket.minimumPaymentLamports as string,
+                  })
+                : await executeFrogBuy({
+                      frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                      ftxApiToken: this.config.ftxApiToken,
+                      telegramUserId: user.telegramUserId,
+                      walletAddress: ticket.walletAddress,
+                      executionId,
+                      maximumPaymentLamports:
+                          ticket.maximumPaymentLamports as string,
+                      expectedMint: ticket.expectedMint,
+                      excludedMints: ticket.purchasedMints,
+                  });
+            if (frogExecutionWasSubmitted(result)) {
+                const purchasedMints = result.listing?.mint
+                    ? Array.from(
+                          new Set([
+                              ...(ticket.purchasedMints ?? []),
+                              result.listing.mint,
+                          ])
+                      )
+                    : ticket.purchasedMints;
+                this.store.updateFrogTradeTicket(user, ticket.id, {
+                    signatures: result.signature
+                        ? [...ticket.signatures, result.signature]
+                        : ticket.signatures,
+                    purchasedMints,
+                    error: result.error,
+                });
+                await ctx.reply(
+                    [
+                        isSell
+                            ? `Sale ${ticket.completed + 1}/${ticket.quantity} submitted: ${frogTradeDisplayName(ticket, ticket.completed)}.`
+                            : `Purchase ${ticket.completed + 1}/${ticket.quantity} submitted.`,
+                        "Ribbot will confirm it here.",
+                    ].join("\n"),
+                    this.frogStatusKeyboard(ticket.id)
+                );
+                this.scheduleFrogTradeConfirmation(
+                    ctx,
+                    user,
+                    ticket.id,
+                    executionId
+                );
+                return;
+            }
+            const executionError = frogTicketExecutionError(result, ticket);
+            this.store.updateFrogTradeTicket(user, ticket.id, {
+                status: ticket.completed > 0 ? "partially_executed" : "failed",
+                currentExecutionId: undefined,
+                error: executionError,
+                providerStatus: result.providerStatus,
+                providerKind: result.providerKind,
+                providerCode: result.providerCode,
+            });
+            if (result.code === "RIBBOT_ACCESS_REQUIRED") {
+                await this.replyRibbotAccessRequired(ctx, user);
+                return;
+            }
+            await ctx.reply(
+                executionError,
+                ticket.completed > 0
+                    ? Markup.inlineKeyboard([
+                          [Markup.button.callback("Frogs", "ribbot:nfts:0")],
+                      ])
+                    : this.menuKeyboard()
+            );
+        } catch (error) {
+            logger.warn("Magic Eden Frog execution failed", error);
+            this.store.updateFrogTradeTicket(user, ticket.id, {
+                status: ticket.completed > 0 ? "partially_executed" : "failed",
+                error: "Frog trade request failed",
+            });
+            await ctx.reply(
+                "Frog trade request failed. No retry was sent.",
+                this.menuKeyboard()
+            );
+        }
+    }
+
+    private scheduleFrogTradeConfirmation(
+        ctx: Context,
+        user: TradingUser,
+        ticketId: string,
+        executionId: string,
+        attempt = 1
+    ): void {
+        if (
+            this.frogConfirmationPollingStopped ||
+            attempt > FROG_CONFIRMATION_MAX_ATTEMPTS
+        ) {
+            return;
+        }
+        const ticket = this.store.getFrogTradeTicket(user, ticketId);
+        if (!ticket || ticket.currentExecutionId !== executionId) return;
+
+        const key = this.frogConfirmationKey(user, ticketId, executionId);
+        if (this.frogConfirmationTimers.has(key)) return;
+
+        const timer = setTimeout(() => {
+            this.frogConfirmationTimers.delete(key);
+            void this.reconcileFrogTradeStatus(ctx, user, ticketId, {
+                expectedExecutionId: executionId,
+                notifyPending: false,
+            })
+                .then((outcome) => {
+                    if (outcome === "pending" || outcome === "retry") {
+                        this.scheduleFrogTradeConfirmation(
+                            ctx,
+                            user,
+                            ticketId,
+                            executionId,
+                            attempt + 1
+                        );
+                    }
+                })
+                .catch((error) => {
+                    logger.warn(
+                        "Magic Eden Frog confirmation poll failed",
+                        error
+                    );
+                });
+        }, FROG_CONFIRMATION_POLL_INTERVAL_MS);
+        timer.unref();
+        this.frogConfirmationTimers.set(key, timer);
+    }
+
+    private frogConfirmationKey(
+        user: TradingUser,
+        ticketId: string,
+        executionId: string
+    ): string {
+        return `${user.telegramUserId}:${ticketId}:${executionId}`;
+    }
+
+    private clearFrogTradeConfirmation(
+        user: TradingUser,
+        ticketId: string,
+        executionId: string
+    ): void {
+        const key = this.frogConfirmationKey(user, ticketId, executionId);
+        const timer = this.frogConfirmationTimers.get(key);
+        if (timer) clearTimeout(timer);
+        this.frogConfirmationTimers.delete(key);
+    }
+
+    private async replyRibbotAccessRequired(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        try {
+            const result = await requestControlCode({
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+                username: user.username,
+            });
+            if (result.status === "ready" && result.controlUrl) {
+                const controlHref = controlUrlWithSession(
+                    result.controlUrl,
+                    result.telegramUserId,
+                    result.code
+                );
+                await ctx.reply(
+                    [
+                        "Ribbot access required",
+                        "",
+                        "This purchase was not sent.",
+                        "",
+                        "Enable Ribbot for your Spot & NFT Wallet, then open /frogs for a new quote.",
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [Markup.button.url("Enable Ribbot", controlHref)],
+                    ])
+                );
+                return;
+            }
+        } catch (error) {
+            logger.warn("Ribbot access recovery link failed", error);
+        }
+        await ctx.reply(
+            [
+                "Ribbot access required",
+                "",
+                "This purchase was not sent.",
+                "",
+                "Open /control to enable Ribbot, then open /frogs for a new quote.",
+            ].join("\n"),
+            this.menuKeyboard()
+        );
+    }
+
+    private async replyFrogTradeStatus(
+        ctx: Context,
+        user: TradingUser,
+        ticketId?: string
+    ): Promise<void> {
+        const ticket = ticketId
+            ? this.store.getFrogTradeTicket(user, ticketId)
+            : undefined;
+        if (!ticket) {
+            await ctx.reply(
+                "Frog trade ticket not found.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        if (ticket.status === "executed") {
+            await ctx.reply(
+                frogTradeCompletionMessage(ticket),
+                this.menuKeyboard()
+            );
+            return;
+        }
+        if (!ticket.currentExecutionId) {
+            await ctx.reply(
+                "Frog trade ticket not found.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        await this.reconcileFrogTradeStatus(ctx, user, ticket.id, {
+            notifyPending: true,
+        });
+    }
+
+    private async reconcileFrogTradeStatus(
+        ctx: Context,
+        user: TradingUser,
+        ticketId: string,
+        options: {
+            expectedExecutionId?: string;
+            notifyPending: boolean;
+        }
+    ): Promise<FrogTradeReconciliationOutcome> {
+        const ticket = this.store.getFrogTradeTicket(user, ticketId);
+        if (
+            !ticket?.currentExecutionId ||
+            (options.expectedExecutionId &&
+                ticket.currentExecutionId !== options.expectedExecutionId)
+        ) {
+            return "handled";
+        }
+        const executionId = ticket.currentExecutionId;
+        const isSell = ticket.side === "sell" || ticket.side === "bulk_sell";
+        const sellMint =
+            ticket.side === "bulk_sell"
+                ? ticket.mints?.[ticket.completed]
+                : ticket.mint;
+        try {
+            const base = {
+                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
+                ftxApiToken: this.config.ftxApiToken,
+                telegramUserId: user.telegramUserId,
+                walletAddress: ticket.walletAddress,
+                executionId,
+            };
+            const result = isSell
+                ? await fetchFrogSellExecutionStatus({
+                      ...base,
+                      mint: sellMint as string,
+                      minimumPaymentLamports:
+                          ticket.minimumPaymentLamports as string,
+                  })
+                : await fetchFrogBuyExecutionStatus({
+                      ...base,
+                      maximumPaymentLamports:
+                          ticket.maximumPaymentLamports as string,
+                      expectedMint: ticket.expectedMint,
+                  });
+            if (result.status === "executed") {
+                const latest = this.store.getFrogTradeTicket(user, ticket.id);
+                if (!latest || latest.currentExecutionId !== executionId) {
+                    return "handled";
+                }
+                const completed = latest.completed + 1;
+                const signatures =
+                    result.signature &&
+                    !latest.signatures.includes(result.signature)
+                        ? [...latest.signatures, result.signature]
+                        : latest.signatures;
+                const updated = this.store.updateFrogTradeTicket(
+                    user,
+                    latest.id,
+                    {
+                        completed,
+                        signatures,
+                        status:
+                            completed >= latest.quantity
+                                ? "executed"
+                                : "partially_executed",
+                        currentExecutionId: undefined,
+                        error: undefined,
+                    }
+                );
+                this.clearFrogTradeConfirmation(user, latest.id, executionId);
+                if (!updated || completed >= latest.quantity) {
+                    await ctx.reply(
+                        frogTradeCompletionMessage(
+                            updated ?? { ...latest, completed, signatures }
+                        ),
+                        Markup.inlineKeyboard([
+                            [Markup.button.callback("Frogs", "ribbot:nfts:0")],
+                        ])
+                    );
+                    return "handled";
+                }
+                await this.submitFrogTrade(ctx, user, updated);
+                return "handled";
+            }
+            if (result.status === "pending" || result.status === "not_found") {
+                if (options.notifyPending) {
+                    await ctx.reply(
+                        "Transaction is still pending. Ribbot did not submit another trade.",
+                        this.frogStatusKeyboard(ticket.id)
+                    );
+                }
+                return "pending";
+            }
+            const latest = this.store.getFrogTradeTicket(user, ticket.id);
+            if (!latest || latest.currentExecutionId !== executionId) {
+                return "handled";
+            }
+            const executionError = frogTicketExecutionError(result, latest);
+            this.store.updateFrogTradeTicket(user, latest.id, {
+                status: latest.completed > 0 ? "partially_executed" : "failed",
+                currentExecutionId: undefined,
+                error: executionError,
+            });
+            this.clearFrogTradeConfirmation(user, latest.id, executionId);
+            await ctx.reply(
+                executionError,
+                latest.completed > 0
+                    ? Markup.inlineKeyboard([
+                          [Markup.button.callback("Frogs", "ribbot:nfts:0")],
+                      ])
+                    : this.menuKeyboard()
+            );
+            return "handled";
+        } catch (error) {
+            logger.warn("Magic Eden Frog reconciliation failed", error);
+            if (options.notifyPending) {
+                await ctx.reply(
+                    "Status is unavailable. Ribbot did not submit another trade.",
+                    this.frogStatusKeyboard(ticket.id)
+                );
+            }
+            return "retry";
+        }
+    }
+
+    private async replyFrogTradeCancelled(
+        ctx: Context,
+        user: TradingUser,
+        ticketId?: string
+    ): Promise<void> {
+        const ticket = ticketId
+            ? this.store.getFrogTradeTicket(user, ticketId)
+            : undefined;
+        if (!ticket || ticket.status !== "pending_confirmation") {
+            await ctx.reply(
+                "This Frog trade cannot be cancelled.",
+                this.menuKeyboard()
+            );
+            return;
+        }
+        this.store.updateFrogTradeTicket(user, ticket.id, {
+            status: "cancelled",
+        });
+        await ctx.reply("Frog trade cancelled.", this.menuKeyboard());
     }
 
     private async replyPositions(
@@ -2483,140 +4446,6 @@ export class TradingBot {
         }
     }
 
-    private async replyAlpha(
-        ctx: Context,
-        user: TradingUser,
-        action: "show" | "on" | "off" | "status"
-    ): Promise<void> {
-        let currentUser = user;
-        let transition: string | undefined;
-        if (action === "on") {
-            currentUser = this.store.setAlphaSignalsEnabled(user, true);
-            transition = this.config.alphaAlertsEnabled
-                ? "Proactive Robinhood Chain volume and alpha alerts are on for this chat. Existing signals will be baselined before new alerts are delivered."
-                : "Alpha alert opt-in saved. The operator delivery gate is still off, so no proactive Telegram message will be sent yet.";
-        } else if (action === "off") {
-            currentUser = this.store.setAlphaSignalsEnabled(user, false);
-            transition =
-                "Proactive Robinhood Chain volume and alpha alerts are off for this chat.";
-        }
-
-        try {
-            const result = await fetchRobinhoodAlphaSignals({
-                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
-                ftxApiToken: this.config.ftxApiToken,
-            });
-            await ctx.reply(
-                [
-                    transition,
-                    transition ? "" : undefined,
-                    formatRobinhoodAlphaOverview(
-                        result,
-                        Boolean(currentUser.alphaSignalsEnabled),
-                        this.config.alphaAlertsEnabled
-                    ),
-                ]
-                    .filter(Boolean)
-                    .join("\n"),
-                Markup.inlineKeyboard([
-                    [
-                        Markup.button.callback("Refresh", "ribbot:alpha"),
-                        currentUser.alphaSignalsEnabled
-                            ? Markup.button.callback(
-                                  "Alerts Off",
-                                  "ribbot:alpha-off"
-                              )
-                            : Markup.button.callback(
-                                  "Alerts On",
-                                  "ribbot:alpha-on"
-                              ),
-                    ],
-                    [Markup.button.callback("Menu", "ribbot:menu")],
-                ])
-            );
-        } catch (error) {
-            logger.warn("FTX/FrogX Robinhood alpha fetch failed", error);
-            await ctx.reply(
-                [
-                    transition,
-                    transition ? "" : undefined,
-                    "Robinhood Chain alpha signals are unavailable from FTX/FrogX right now.",
-                    "No trade or chain transaction was attempted.",
-                ]
-                    .filter(Boolean)
-                    .join("\n"),
-                this.menuKeyboard()
-            );
-        }
-    }
-
-    private async replyVolume(
-        ctx: Context,
-        user: TradingUser,
-        action: "show" | "on" | "off" | "status"
-    ): Promise<void> {
-        let currentUser = user;
-        let transition: string | undefined;
-        if (action === "on") {
-            currentUser = this.store.setAlphaSignalsEnabled(user, true);
-            transition = this.config.alphaAlertsEnabled
-                ? "Proactive Robinhood volume and alpha alerts are on for this chat. Existing events will be baselined before new alerts are delivered."
-                : "Volume alert opt-in saved. The operator delivery gate is still off, so no proactive Telegram message will be sent yet.";
-        } else if (action === "off") {
-            currentUser = this.store.setAlphaSignalsEnabled(user, false);
-            transition =
-                "Proactive Robinhood volume and alpha alerts are off for this chat.";
-        }
-
-        try {
-            const result = await fetchRobinhoodAlphaSignals({
-                frogxApiBaseUrl: this.config.frogxApiBaseUrl,
-                ftxApiToken: this.config.ftxApiToken,
-            });
-            await ctx.reply(
-                [
-                    transition,
-                    transition ? "" : undefined,
-                    formatRobinhoodVolumeOverview(
-                        result,
-                        Boolean(currentUser.alphaSignalsEnabled),
-                        this.config.alphaAlertsEnabled
-                    ),
-                ]
-                    .filter(Boolean)
-                    .join("\n"),
-                Markup.inlineKeyboard([
-                    [
-                        Markup.button.callback("Refresh", "ribbot:volume"),
-                        currentUser.alphaSignalsEnabled
-                            ? Markup.button.callback(
-                                  "Alerts Off",
-                                  "ribbot:volume-off"
-                              )
-                            : Markup.button.callback(
-                                  "Alerts On",
-                                  "ribbot:volume-on"
-                              ),
-                    ],
-                    [Markup.button.callback("Menu", "ribbot:menu")],
-                ])
-            );
-        } catch (error) {
-            logger.warn("FTX/FrogX Robinhood volume fetch failed", error);
-            await ctx.reply(
-                [
-                    transition,
-                    transition ? "" : undefined,
-                    "Robinhood Chain volume signals are unavailable from FTX/FrogX right now.",
-                    "No trade or chain transaction was attempted.",
-                ]
-                    .filter(Boolean)
-                    .join("\n"),
-                this.menuKeyboard()
-            );
-        }
-    }
-
     private async replyTokenCleanup(
         ctx: Context,
         user: TradingUser
@@ -3068,9 +4897,7 @@ export class TradingBot {
                     ticket.execution?.signature
                         ? `Signature: ${ticket.execution.signature}`
                         : undefined,
-                    ticket.execution?.solscanUrl
-                        ? `Solscan: ${ticket.execution.solscanUrl}`
-                        : undefined,
+                    solscanTransactionLine(ticket.execution?.signature),
                 ]),
             tickets.length > 10 ? `\n...and ${tickets.length - 10} more` : "",
         ].filter(Boolean);
@@ -3798,9 +5625,7 @@ export class TradingBot {
                     ticket.execution?.signature
                         ? `Signature: ${ticket.execution.signature}`
                         : undefined,
-                    ticket.execution?.solscanUrl
-                        ? `Solscan: ${ticket.execution.solscanUrl}`
-                        : undefined,
+                    solscanTransactionLine(ticket.execution?.signature),
                 ]
                     .filter(Boolean)
                     .join("\n")
@@ -3933,9 +5758,7 @@ export class TradingBot {
                     "FTX/FrogX executed the withdrawal through Privy.",
                     ...this.withdrawalTicketSummaryLines(updated ?? ticket),
                     `Signature: ${execution.signature}`,
-                    execution.solscanUrl
-                        ? `Solscan: ${execution.solscanUrl}`
-                        : undefined,
+                    solscanTransactionLine(execution.signature),
                     execution.transactionId
                         ? `Privy tx: ${execution.transactionId}`
                         : undefined,
@@ -4025,9 +5848,7 @@ export class TradingBot {
                         ...this.withdrawalTicketSummaryLines(updated ?? ticket),
                         `Provider status: ${result.providerStatus ?? "confirmed"}`,
                         `Signature: ${result.signature}`,
-                        result.solscanUrl
-                            ? `Solscan: ${result.solscanUrl}`
-                            : undefined,
+                        solscanTransactionLine(result.signature),
                     ]
                         .filter(Boolean)
                         .join("\n"),
@@ -5998,6 +7819,20 @@ export class TradingBot {
         return user;
     }
 
+    private hasConnectedAccount(user: TradingUser): boolean {
+        return (
+            user.walletSource === "privy" && Boolean(user.solanaWalletAddress)
+        );
+    }
+
+    private async connectedAccountUser(
+        user: TradingUser
+    ): Promise<TradingUser> {
+        return this.hasConnectedAccount(user)
+            ? user
+            : this.refreshAccountSnapshot(user);
+    }
+
     private async replyWatchlist(
         ctx: Context,
         user: TradingUser,
@@ -7158,7 +8993,50 @@ export class TradingBot {
         }
     }
 
-    private async replyHelp(ctx: Context): Promise<void> {
+    private async replyHelp(ctx: Context, user: TradingUser): Promise<void> {
+        if (!this.config.spotEnabled) {
+            const currentUser = await this.connectedAccountUser(user);
+            const connected = this.hasConnectedAccount(currentUser);
+            await ctx.reply(
+                [
+                    "Ribbot account commands",
+                    connected
+                        ? "/start - open Ribbot"
+                        : "/start - connect your Frog Trading Exchange account",
+                    "/farm - open your Delta Neutral farmer",
+                    "/status - check your Imperial Perps Wallet",
+                    ...(this.config.nftTradingEnabled
+                        ? [
+                              "/frogs - view and trade Solana Business Frogs",
+                              "/buyfrog [max SOL] - buy the live floor Frog",
+                              "/sweepfrogs <count> [max SOL each] - buy up to 10",
+                              "/sellfrog <mint> [minimum SOL] - sell to the top offer",
+                          ]
+                        : []),
+                    "/account - refresh your Frog Trading Exchange account",
+                    "/reset - restart account setup",
+                    "/referral <code> - apply an invite code",
+                    "/menu - main menu",
+                    "",
+                    "More Ribbot features will appear here as they become available.",
+                ].join("\n"),
+                Markup.inlineKeyboard([
+                    ...(connected
+                        ? []
+                        : [
+                              [
+                                  Markup.button.callback(
+                                      "Connect Account",
+                                      "ribbot:farm"
+                                  ),
+                              ],
+                          ]),
+                    [Markup.button.callback("Menu", "ribbot:menu")],
+                ])
+            );
+            return;
+        }
+
         await ctx.reply(
             [
                 "Ribbot trading commands",
@@ -7166,7 +9044,6 @@ export class TradingBot {
                 "/wallet - wallet setup status",
                 "/wallet select <number> - choose the active FTX wallet",
                 "/account - refresh FTX account snapshot",
-                "/control - FTX account control code",
                 "/referral - show referral code and tracking-only rewards",
                 "/referral <code> - apply an invite code",
                 "/buy <mint> <SOL> - create a buy ticket",
@@ -7176,10 +9053,6 @@ export class TradingBot {
                 "/position <mint> - open one position",
                 "/pnl - PNL and fill coverage",
                 "/activity - recent FTX account events",
-                "/alpha - latest Robinhood Chain profitable-wallet signals",
-                "/alpha on|off - opt into or out of proactive alpha alerts",
-                "/volume - Robinhood high-volume tokens and new pairs",
-                "/volume on|off - toggle the shared volume + alpha alert feed",
                 "/cleanup - review dust, hidden, and unpriced token positions",
                 "/safety <mint> - review mint/freeze authority and price signals",
                 "/scan <mint> [SOL] - review safety, market cap, and quote impact",
@@ -7243,6 +9116,38 @@ export class TradingBot {
                 "No trade was built, signed, or broadcast.",
             ].join("\n"),
             Markup.inlineKeyboard([
+                [Markup.button.callback("Menu", "ribbot:menu")],
+            ])
+        );
+    }
+
+    private async replyBetaUnavailable(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        const connected = this.hasConnectedAccount(user);
+        await ctx.reply(
+            [
+                "That Ribbot feature is not available yet.",
+                ...(connected
+                    ? []
+                    : [
+                          "Connect your Frog Trading Exchange account now and this same account will work as new features become available.",
+                      ]),
+                "",
+                "No quote, order, signature, or transaction was created.",
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                ...(connected
+                    ? []
+                    : [
+                          [
+                              Markup.button.callback(
+                                  "Connect Account",
+                                  "ribbot:farm"
+                              ),
+                          ],
+                      ]),
                 [Markup.button.callback("Menu", "ribbot:menu")],
             ])
         );
@@ -7822,9 +9727,7 @@ export class TradingBot {
                     order.execution?.signature
                         ? `Signature: ${order.execution.signature}`
                         : undefined,
-                    order.execution?.solscanUrl
-                        ? `Solscan: ${order.execution.solscanUrl}`
-                        : undefined,
+                    solscanTransactionLine(order.execution?.signature),
                 ]
                     .filter(Boolean)
                     .join("\n")
@@ -7961,9 +9864,7 @@ export class TradingBot {
                     "FTX/FrogX executed the swap through Privy.",
                     ...this.orderSummaryLines(updated ?? order),
                     `Signature: ${execution.signature}`,
-                    execution.solscanUrl
-                        ? `Solscan: ${execution.solscanUrl}`
-                        : undefined,
+                    solscanTransactionLine(execution.signature),
                     execution.transactionId
                         ? `Privy tx: ${execution.transactionId}`
                         : undefined,
@@ -8044,9 +9945,7 @@ export class TradingBot {
                         ...this.orderSummaryLines(updated ?? order),
                         `Provider status: ${result.providerStatus ?? "confirmed"}`,
                         `Signature: ${result.signature}`,
-                        result.solscanUrl
-                            ? `Solscan: ${result.solscanUrl}`
-                            : undefined,
+                        solscanTransactionLine(result.signature),
                     ]
                         .filter(Boolean)
                         .join("\n"),
@@ -8369,6 +10268,9 @@ export class TradingBot {
             lines.push(
                 `Signature: ${shortAddress(monitor.executionSignature)}`
             );
+            lines.push(
+                solscanTransactionLine(monitor.executionSignature) as string
+            );
         }
         if (monitor.reconciliationCheckedAt) {
             lines.push(`Checked: ${monitor.reconciliationCheckedAt}`);
@@ -8542,7 +10444,7 @@ export class TradingBot {
         return [
             `${index + 1}. ${shortAddress(item.mint)}`,
             `${lamportsToSol(item.amountIn).toFixed(4)} SOL`,
-            item.signature ? `sig ${shortAddress(item.signature)}` : undefined,
+            solscanTransactionLine(item.signature),
         ]
             .filter(Boolean)
             .join(" ");
@@ -8813,6 +10715,11 @@ export class TradingBot {
             lines.push(
                 `Signature: ${shortAddress(order.scheduler.executionSignature)}`
             );
+            lines.push(
+                solscanTransactionLine(
+                    order.scheduler.executionSignature
+                ) as string
+            );
         }
         if (order.scheduler?.reconciliationStatus) {
             lines.push(
@@ -8994,18 +10901,123 @@ function parseWithdrawalIntent(
     };
 }
 
-function controlUrlWithTelegramId(
+export function controlUrlWithSession(
     controlUrl: string,
-    telegramUserId: string
+    telegramUserId: string,
+    code: string
 ): string {
     try {
         const url = new URL(controlUrl);
         url.searchParams.set("telegramUserId", telegramUserId);
+        url.hash = new URLSearchParams({ code }).toString();
         return url.toString();
     } catch {
-        const separator = controlUrl.includes("?") ? "&" : "?";
-        return `${controlUrl}${separator}telegramUserId=${encodeURIComponent(telegramUserId)}`;
+        const baseUrl = controlUrl.split("#", 1)[0];
+        const separator = baseUrl.includes("?") ? "&" : "?";
+        const fragment = new URLSearchParams({ code }).toString();
+        return `${baseUrl}${separator}telegramUserId=${encodeURIComponent(telegramUserId)}#${fragment}`;
     }
+}
+
+function isBetaIntent(intent: ParsedIntent): boolean {
+    return [
+        "onboarding",
+        "menu",
+        "farm",
+        "perpsStatus",
+        "deltaNeutral",
+        "deltaNeutralStop",
+        "spotComingSoon",
+        "account",
+        "control",
+        "reset",
+        "referral",
+        "nfts",
+        "frogBuy",
+        "frogSweep",
+        "frogSell",
+        "help",
+        "unknown",
+    ].includes(intent.kind);
+}
+
+function deltaNeutralPerpsWalletLabel(preview: DeltaNeutralPreview): string {
+    return preview.profileAddress ?? "Not available";
+}
+
+function perpsStrategyStatus(
+    strategyReady: boolean,
+    liveExecutionEnabled: boolean
+): string {
+    if (!liveExecutionEnabled) return "Launch not enabled";
+    if (!strategyReady) return "Farmer not ready";
+    return "Ready";
+}
+
+function perpsStrategyNextStep(
+    strategyReady: boolean,
+    liveExecutionEnabled: boolean
+): string {
+    if (!liveExecutionEnabled) {
+        return "Beta launch is not enabled yet. The Start button will appear here at launch.";
+    }
+    if (!strategyReady)
+        return "Next: Ribbot will message you when farming is ready.";
+    return "Next: review Delta Neutral and confirm one live cycle.";
+}
+
+function deltaNeutralPreviewNextStep(
+    preview: DeltaNeutralPreview,
+    liveExecutionEnabled: boolean
+): string {
+    if (!preview.profileFunded) {
+        if (!preview.profileAddress) {
+            return "Next: run /start to reconnect Imperial.";
+        }
+        return `Next: send at least ${preview.minimumProfileUsdc} USDC on Solana to the Imperial Perps Wallet above for perps trading.`;
+    }
+    if (!liveExecutionEnabled) {
+        return "Beta launch is not enabled yet. The Start button will appear here at launch.";
+    }
+    if (!preview.liveReady) {
+        return "Next: Ribbot will message you when farming is ready.";
+    }
+    return "Next: review Delta Neutral and confirm one live cycle.";
+}
+
+function deltaNeutralRunIsActive(run: DeltaNeutralRun): boolean {
+    if ("running" in run) return run.launching || run.running;
+    return [
+        "launching",
+        "running",
+        "stopping",
+        "pending_reconciliation",
+    ].includes(run.status);
+}
+
+function deltaNeutralRunLabel(run: DeltaNeutralRun): string {
+    if (!("running" in run)) return titleCaseStatus(run.status);
+    if (run.failed) return "Failed";
+    if (run.launching) return "Starting";
+    if (run.running) return run.stopRequested ? "Stopping" : "Running";
+    if (run.completedCycles >= run.maxCycles) return "Complete";
+    if (run.stopRequested || run.stoppedAtUnix !== null) return "Stopped";
+    return "Ready";
+}
+
+function titleCaseStatus(value: string): string {
+    return value
+        .split("_")
+        .filter(Boolean)
+        .map((word) => word[0]?.toUpperCase() + word.slice(1))
+        .join(" ");
+}
+
+function formatUsdc(value: number): string {
+    return value.toLocaleString("en-US", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 6,
+    });
 }
 
 function hasCopyTradeEditPatch(
@@ -9119,6 +11131,92 @@ function findLastSolanaAddress(values: string[]): string | undefined {
 function findNumber(values: string[]): number | undefined {
     const found = values.map(numberFromValue).find(isNumber);
     return found;
+}
+
+function positiveNumber(value?: string): number | undefined {
+    return value ? numberFromValue(value) : undefined;
+}
+
+function positiveInteger(value?: string): number | undefined {
+    const parsed = positiveNumber(value);
+    return parsed !== undefined && Number.isInteger(parsed)
+        ? parsed
+        : undefined;
+}
+
+function formatSol(value: number): string {
+    return value.toFixed(9).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatLamportsAsSol(value: string): string {
+    const lamports = BigInt(value);
+    const whole = lamports / 1_000_000_000n;
+    const fraction = (lamports % 1_000_000_000n)
+        .toString()
+        .padStart(9, "0")
+        .replace(/0+$/, "");
+    return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function addBasisPoints(value: string, basisPoints: number): string {
+    const denominator = 10_000n;
+    const numerator =
+        BigInt(value) * BigInt(10_000 + Math.max(0, Math.round(basisPoints)));
+    return ((numerator + denominator - 1n) / denominator).toString();
+}
+
+function frogExecutionWasSubmitted(result: FrogTradeExecutionResult): boolean {
+    return [
+        "executed",
+        "submitted",
+        "pending",
+        "pending_reconciliation",
+    ].includes(result.status);
+}
+
+function frogExecutionError(result: FrogTradeExecutionResult): string {
+    if (result.code === "FLOOR_ABOVE_CAP") {
+        return "The live Frog floor moved above your limit. No purchase was sent.";
+    }
+    if (result.code === "OFFER_BELOW_MINIMUM") {
+        return "The live offer moved below your minimum. No sale was sent.";
+    }
+    if (
+        result.code === "PRIVY_REJECTED_TRANSACTION" &&
+        !result.providerCode &&
+        typeof result.providerStatus === "number"
+    ) {
+        return `Privy rejected the transaction before broadcast (HTTP ${result.providerStatus}).`;
+    }
+    return result.error || "The Frog trade was not submitted.";
+}
+
+function frogTicketExecutionError(
+    result: FrogTradeExecutionResult,
+    ticket: FrogTradeTicket
+): string {
+    if (
+        result.code === "NO_EXECUTABLE_LISTINGS" &&
+        ticket.side === "sweep" &&
+        ticket.completed > 0
+    ) {
+        return [
+            `Sweep stopped: ${ticket.completed}/${ticket.quantity} Frogs purchased.`,
+            "No executable floor listing was available for the next Frog. No additional purchase was sent.",
+        ].join("\n\n");
+    }
+    if (
+        result.code === "FLOOR_ABOVE_CAP" &&
+        ticket.side === "sweep" &&
+        ticket.completed > 0 &&
+        ticket.maximumPaymentLamports
+    ) {
+        return [
+            `Sweep stopped: ${ticket.completed}/${ticket.quantity} Frogs purchased.`,
+            `The next floor exceeded your ${formatLamportsAsSol(ticket.maximumPaymentLamports)} SOL limit. No additional purchase was sent.`,
+        ].join("\n\n");
+    }
+    return frogExecutionError(result);
 }
 
 function parseOrderSide(value?: string): ScheduledOrderSide | undefined {
@@ -9269,6 +11367,41 @@ function shortAddress(address: string): string {
     return `${address.slice(0, 4)}...${address.slice(-4)}`;
 }
 
+function frogDisplayName(name?: string | null): string {
+    const number = name?.match(/#\s*(\d+)/)?.[1];
+    return number ? `#${number}` : "Frog";
+}
+
+function frogTradeDisplayName(ticket: FrogTradeTicket, index = 0): string {
+    return ticket.side === "bulk_sell"
+        ? (ticket.names?.[index] ?? "Frog")
+        : (ticket.name ?? "Frog");
+}
+
+function frogTradeCompletionMessage(ticket: FrogTradeTicket): string {
+    const lines =
+        ticket.side === "bulk_sell"
+            ? (() => {
+                  const completed = Math.min(ticket.completed, ticket.quantity);
+                  const names = ticket.names?.slice(0, completed) ?? [];
+                  return [
+                      "Bulk sale complete. 🐸",
+                      "",
+                      names.length > 0
+                          ? `Sold: ${names.join(", ")}`
+                          : `Sold: ${completed} ${completed === 1 ? "Frog" : "Frogs"}`,
+                  ];
+              })()
+            : ticket.side === "sell"
+              ? [`Sale complete: ${frogTradeDisplayName(ticket)} 🐸`]
+              : ["Purchase complete. 🐸"];
+    const solscanLines = solscanTransactionLines(ticket.signatures);
+    return [
+        ...lines,
+        ...(solscanLines.length > 0 ? ["", ...solscanLines] : []),
+    ].join("\n");
+}
+
 function parseAmountSol(label: string): number {
     const [raw] = label.split(/\s+/);
     const parsed = Number(raw);
@@ -9385,7 +11518,7 @@ function activityEventDetail(event: ActivityEvent): string {
         metadata.caseId ? `review ${metadata.caseId}` : undefined,
         metadata.resolution ? `resolution ${metadata.resolution}` : undefined,
         metadata.signature && typeof metadata.signature === "string"
-            ? `sig ${shortAddress(metadata.signature)}`
+            ? solscanTransactionLine(metadata.signature)
             : undefined,
         metadata.referralCode ? `code ${metadata.referralCode}` : undefined,
         metadata.reason ? String(metadata.reason) : undefined,

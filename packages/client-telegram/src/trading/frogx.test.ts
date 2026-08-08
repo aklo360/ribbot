@@ -9,18 +9,26 @@ import {
     controlStoredCopyTradeConfig,
     duplicateStoredCopyTradeConfig,
     executeStoredBundleBuyConfig,
+    executeFrogBuy,
     executeSwapTransaction,
     executeWithdrawal,
+    fetchDeltaNeutralStatus,
+    fetchFrogBuyExecutionStatus,
+    fetchFrogMarket,
+    fetchFrogTopOffer,
     fetchAutoBuyExecutionStatus,
     fetchAutoSellExecutionStatus,
     fetchCopyTradeExecutionStatus,
     fetchNftHoldings,
     fetchPnl,
-    fetchRobinhoodAlphaSignals,
     fetchSniperExecutionStatus,
     fetchStoredBundleBuyExecutionStatus,
     fetchSwapExecutionStatus,
+    previewDeltaNeutral,
     provisionTradingWallet,
+    resetTradingSetup,
+    startDeltaNeutral,
+    stopDeltaNeutral,
     storeCopyTradeConfig,
     updateStoredCopyTradeConfig,
     validatePreferences,
@@ -53,6 +61,197 @@ const bundleInput = {
     userPublicKey: "So11111111111111111111111111111111111111112",
     configId: "bb_testbundle",
 };
+
+const deltaNeutralInput = {
+    frogxApiBaseUrl: "https://frogx.example/",
+    ftxApiToken: "ribbot-token",
+    telegramUserId: "123456",
+};
+
+const deltaNeutralRun = {
+    strategy: "delta_neutral",
+    preset: "low",
+    wallet: "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+    runId: "ribbot-delta-neutral:123456:test",
+    launching: false,
+    running: true,
+    stopRequested: false,
+    completedCycles: 0,
+    maxCycles: 1,
+    dailyBudgetUsd: 5,
+    estimatedRunCostUsd: 0.2,
+    completedVolumeUsd: 30,
+    startedAtUnix: 1785500000,
+    stoppedAtUnix: null,
+    lastMessage: "Running",
+    failed: false,
+};
+
+describe("FrogX Delta Neutral client", () => {
+    it("previews the fixed default strategy through the authenticated route", async () => {
+        globalThis.fetch = vi.fn(async (input, init) => {
+            expect(String(input)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/perps/delta-neutral/preview"
+            );
+            expect(init?.method).toBe("POST");
+            expect(new Headers(init?.headers).get("Authorization")).toBe(
+                "Bearer ribbot-token"
+            );
+            expect(JSON.parse(String(init?.body))).toEqual({
+                telegramUserId: "123456",
+            });
+            return Response.json({
+                status: "ready",
+                defaultStrategy: "delta_neutral",
+                defaultPreset: "low",
+                preview: {
+                    strategy: "delta_neutral",
+                    preset: "low",
+                    wallet: deltaNeutralRun.wallet,
+                    profileIndex: 1,
+                    profileAddress: "Profile1111111111111111111111111111111111",
+                    profileUsdc: 70.67903,
+                    minimumProfileUsdc: 50,
+                    profileFunded: true,
+                    liveReady: true,
+                    liveEntryCapUsd: 60,
+                    maxCycles: 1,
+                    blockers: [],
+                },
+                liveExecutionEnabled: true,
+            });
+        });
+
+        await expect(
+            previewDeltaNeutral(deltaNeutralInput)
+        ).resolves.toMatchObject({
+            status: "ready",
+            defaultStrategy: "delta_neutral",
+            defaultPreset: "low",
+            liveExecutionEnabled: true,
+        });
+    });
+
+    it("starts only the fixed one-cycle strategy with explicit confirmation", async () => {
+        globalThis.fetch = vi.fn(async (input, init) => {
+            expect(String(input)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/perps/delta-neutral/start"
+            );
+            expect(JSON.parse(String(init?.body))).toEqual({
+                telegramUserId: "123456",
+                idempotencyKey: "delta-neutral:123456:test-key",
+                confirmLive: true,
+            });
+            return Response.json({
+                status: "running",
+                idempotent: false,
+                run: deltaNeutralRun,
+            });
+        });
+
+        await expect(
+            startDeltaNeutral({
+                ...deltaNeutralInput,
+                idempotencyKey: "delta-neutral:123456:test-key",
+                confirmLive: true,
+            })
+        ).resolves.toMatchObject({
+            status: "running",
+            idempotent: false,
+            run: { maxCycles: 1, dailyBudgetUsd: 5 },
+        });
+    });
+
+    it("reads status and requests a safe stop", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(
+                Response.json({
+                    status: "ready",
+                    defaultStrategy: "delta_neutral",
+                    defaultPreset: "low",
+                    configured: true,
+                    enabled: true,
+                    liveExecutionEnabled: true,
+                    run: deltaNeutralRun,
+                })
+            )
+            .mockResolvedValueOnce(
+                Response.json({
+                    status: "stopping",
+                    run: { ...deltaNeutralRun, stopRequested: true },
+                })
+            );
+        globalThis.fetch = fetchMock;
+
+        await expect(
+            fetchDeltaNeutralStatus(deltaNeutralInput)
+        ).resolves.toMatchObject({ status: "ready", run: { running: true } });
+        await expect(
+            stopDeltaNeutral(deltaNeutralInput)
+        ).resolves.toMatchObject({
+            status: "stopping",
+            run: { stopRequested: true },
+        });
+        expect(String(fetchMock.mock.calls[1][0])).toBe(
+            "https://frogx.example/api/frogx/trading-bot/perps/delta-neutral/stop"
+        );
+        expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+            telegramUserId: "123456",
+        });
+    });
+
+    it("rejects malformed live-start responses", async () => {
+        globalThis.fetch = vi.fn(async () =>
+            Response.json({
+                status: "running",
+                idempotent: false,
+                run: { ...deltaNeutralRun, maxCycles: 99 },
+            })
+        );
+
+        await expect(
+            startDeltaNeutral({
+                ...deltaNeutralInput,
+                idempotencyKey: "delta-neutral:123456:test-key",
+                confirmLive: true,
+            })
+        ).rejects.toThrow("malformed response");
+    });
+});
+
+describe("FrogX setup reset client", () => {
+    it("sends the Telegram account to the authenticated reset route", async () => {
+        globalThis.fetch = vi.fn(async (input, init) => {
+            expect(String(input)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/setup/reset"
+            );
+            expect(new Headers(init?.headers).get("Authorization")).toBe(
+                "Bearer ribbot-token"
+            );
+            expect(JSON.parse(String(init?.body))).toEqual({
+                telegramUserId: "123456",
+            });
+            return Response.json({
+                status: "reset",
+                telegramUserId: "123456",
+                walletAddress: "So11111111111111111111111111111111111111112",
+                resetAt: "2026-07-30T22:00:00.000Z",
+            });
+        });
+
+        await expect(
+            resetTradingSetup({
+                frogxApiBaseUrl: "https://frogx.example/",
+                ftxApiToken: "ribbot-token",
+                telegramUserId: "123456",
+            })
+        ).resolves.toMatchObject({
+            status: "reset",
+            telegramUserId: "123456",
+        });
+    });
+});
 
 describe("FTX settings client", () => {
     it("sends mode, presets, sell fee, and protection to FTX", async () => {
@@ -893,38 +1092,6 @@ describe("FTX PNL client", () => {
     });
 });
 
-describe("FTX Robinhood alpha client", () => {
-    it("uses the authenticated read-only signal endpoint", async () => {
-        globalThis.fetch = vi.fn(async (input, init) => {
-            expect(String(input)).toBe(
-                "https://frogx.example/api/frogx/trading-bot/robinhood-alpha"
-            );
-            expect(new Headers(init?.headers).get("Authorization")).toBe(
-                "Bearer ribbot-token"
-            );
-            expect(init?.method).toBeUndefined();
-            return Response.json({
-                status: "not_ready",
-                chain: "robinhood",
-                chainId: 4663,
-                scannerEnabled: false,
-                warnings: [],
-            });
-        });
-
-        await expect(
-            fetchRobinhoodAlphaSignals({
-                frogxApiBaseUrl: "https://frogx.example/",
-                ftxApiToken: "ribbot-token",
-            })
-        ).resolves.toMatchObject({
-            status: "not_ready",
-            chainId: 4663,
-            scannerEnabled: false,
-        });
-    });
-});
-
 describe("FTX NFT holdings client", () => {
     it("requests the Telegram account's active wallet through authenticated FTX", async () => {
         globalThis.fetch = vi.fn(async (input, init) => {
@@ -968,6 +1135,152 @@ describe("FTX NFT holdings client", () => {
             page: 2,
             total: 6,
             items: [{ mint: "frog-mint-6", compressed: true }],
+        });
+    });
+});
+
+describe("Magic Eden Frog trading client", () => {
+    const input = {
+        frogxApiBaseUrl: "https://frogx.example/",
+        ftxApiToken: "ribbot-token",
+        telegramUserId: "123456",
+        walletAddress: "So11111111111111111111111111111111111111112",
+    };
+
+    it("quotes the market for the exact managed wallet", async () => {
+        globalThis.fetch = vi.fn(async (url, init) => {
+            expect(String(url)).toBe(
+                "https://frogx.example/api/frogx/trading-bot/frogs/market"
+            );
+            expect(new Headers(init?.headers).get("Authorization")).toBe(
+                "Bearer ribbot-token"
+            );
+            expect(JSON.parse(String(init?.body))).toEqual({
+                telegramUserId: "123456",
+                walletAddress: input.walletAddress,
+            });
+            return Response.json({
+                status: "ready",
+                walletAddress: input.walletAddress,
+                floor: {
+                    mint: "frog-mint",
+                    name: "SBF #7503",
+                    image: "https://images.example/frog-7503.png",
+                    priceLamports: "800000000",
+                    priceSol: 0.8,
+                },
+                offer: null,
+                quotedAt: "2026-08-05T12:00:00.000Z",
+            });
+        });
+
+        await expect(fetchFrogMarket(input)).resolves.toMatchObject({
+            status: "ready",
+            floor: {
+                name: "SBF #7503",
+                image: "https://images.example/frog-7503.png",
+                priceLamports: "800000000",
+            },
+        });
+    });
+
+    it("quotes the top offer without requiring a floor listing", async () => {
+        globalThis.fetch = vi.fn(async (url, init) => {
+            expect(String(url)).toBe(
+                "https://frogx.example/api/frogx/magic-eden/top-offer"
+            );
+            expect(init).toBeUndefined();
+            return Response.json({
+                offer: {
+                    pool: "offer-pool",
+                    spotPriceLamports: "31341044",
+                    spotPriceSol: 0.031341044,
+                    minimumPaymentLamports: "29460581",
+                    minimumPaymentSol: 0.029460581,
+                    updatedAt: "2026-08-07T06:06:22.260Z",
+                },
+            });
+        });
+
+        await expect(fetchFrogTopOffer(input)).resolves.toMatchObject({
+            status: "ready",
+            offer: {
+                pool: "offer-pool",
+                minimumPaymentLamports: "29460581",
+            },
+        });
+    });
+
+    it("uses one stable execution ID for submit and reconciliation", async () => {
+        const requests: string[] = [];
+        const requestBodies: Array<Record<string, unknown>> = [];
+        globalThis.fetch = vi.fn(async (url, init) => {
+            requests.push(String(url));
+            const body = JSON.parse(String(init?.body)) as Record<
+                string,
+                unknown
+            >;
+            requestBodies.push(body);
+            expect(body).toMatchObject({
+                executionId: "frog-ticket-1",
+                maximumPaymentLamports: "800000000",
+                expectedMint: "FloorFrog7503111111111111111111111111111111",
+            });
+            return Response.json({
+                status: requests.length === 1 ? "submitted" : "executed",
+                signature: "frog-signature",
+            });
+        });
+        const executionInput = {
+            ...input,
+            executionId: "frog-ticket-1",
+            maximumPaymentLamports: "800000000",
+            expectedMint: "FloorFrog7503111111111111111111111111111111",
+            excludedMints: ["PurchasedFrog11111111111111111111111111111111"],
+        };
+
+        await expect(executeFrogBuy(executionInput)).resolves.toMatchObject({
+            status: "submitted",
+        });
+        await expect(
+            fetchFrogBuyExecutionStatus(executionInput)
+        ).resolves.toMatchObject({ status: "executed" });
+        expect(requests).toEqual([
+            "https://frogx.example/api/frogx/trading-bot/frogs/execute-buy",
+            "https://frogx.example/api/frogx/trading-bot/frogs/execute-buy/status",
+        ]);
+        expect(requestBodies[0].excludedMints).toEqual([
+            "PurchasedFrog11111111111111111111111111111111",
+        ]);
+        expect(requestBodies[1].excludedMints).toBeUndefined();
+    });
+
+    it("preserves only safe Privy rejection diagnostics", async () => {
+        globalThis.fetch = vi.fn(async () =>
+            Response.json(
+                {
+                    status: "rejected",
+                    code: "PRIVY_REJECTED_TRANSACTION",
+                    providerStatus: 403,
+                    providerKind: "http",
+                    providerCode: "policy_violation",
+                    error: "Ribbot access does not allow this purchase.",
+                },
+                { status: 502 }
+            )
+        );
+
+        await expect(
+            executeFrogBuy({
+                ...input,
+                executionId: "frog-ticket-rejected",
+                maximumPaymentLamports: "800000000",
+            })
+        ).resolves.toMatchObject({
+            status: "rejected",
+            providerStatus: 403,
+            providerKind: "http",
+            providerCode: "policy_violation",
         });
     });
 });

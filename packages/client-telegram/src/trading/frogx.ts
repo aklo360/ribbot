@@ -106,6 +106,102 @@ export type NftHoldingsResult =
           required?: string[];
       };
 
+export type FrogMarketResult =
+    | {
+          status: "ready";
+          walletAddress: string;
+          floor: {
+              mint: string;
+              name: string | null;
+              image: string | null;
+              priceLamports: string;
+              priceSol: number;
+          };
+          offer: {
+              pool: string;
+              spotPriceLamports: string;
+              spotPriceSol: number;
+              minimumPaymentLamports: string;
+              minimumPaymentSol: number;
+          } | null;
+          quotedAt: string;
+      }
+    | {
+          status: "unavailable";
+          code?: string;
+          error: string;
+      };
+
+export type FrogTopOfferResult =
+    | {
+          status: "ready";
+          offer: {
+              pool: string;
+              spotPriceLamports: string;
+              spotPriceSol: number;
+              minimumPaymentLamports: string;
+              minimumPaymentSol: number;
+              updatedAt?: string | null;
+          };
+      }
+    | {
+          status: "unavailable";
+          code?: string;
+          error: string;
+      };
+
+export type FrogTradeExecutionResult = {
+    status:
+        | "executed"
+        | "submitted"
+        | "pending"
+        | "pending_reconciliation"
+        | "rejected"
+        | "failed"
+        | "not_found"
+        | "not_configured";
+    code?: string;
+    error?: string;
+    signature?: string | null;
+    transactionId?: string | null;
+    referenceId?: string | null;
+    solscanUrl?: string | null;
+    providerStatus?: number | null;
+    providerKind?: "authorization" | "transport" | "http";
+    providerCode?: string | null;
+    listing?: {
+        mint: string;
+        name?: string | null;
+        image?: string | null;
+        priceLamports: string;
+        priceSol: number;
+    };
+    offer?: {
+        minimumPaymentLamports: string;
+        minimumPaymentSol: number;
+    };
+};
+
+export type FrogMarketInput = {
+    frogxApiBaseUrl: string;
+    ftxApiToken?: string;
+    telegramUserId: string;
+    walletAddress: string;
+};
+
+export type FrogBuyExecutionInput = FrogMarketInput & {
+    executionId: string;
+    maximumPaymentLamports: string;
+    expectedMint?: string;
+    excludedMints?: string[];
+};
+
+export type FrogSellExecutionInput = FrogMarketInput & {
+    executionId: string;
+    mint: string;
+    minimumPaymentLamports: string;
+};
+
 export type TokenCleanupInput = {
     frogxApiBaseUrl: string;
     ftxApiToken?: string;
@@ -424,6 +520,14 @@ export type TradingAccountSnapshot = {
     updatedAt: string;
 };
 
+export type TradingAccountSetupStatus = {
+    walletReady: boolean;
+    automationSignerReady: boolean;
+    imperialConnected: boolean;
+    botAccessEnabled: boolean;
+    complete: boolean;
+};
+
 export type TradingAccountInput = {
     frogxApiBaseUrl: string;
     ftxApiToken?: string;
@@ -442,6 +546,7 @@ export type TradingAccountResult =
     | {
           status: "ready";
           account: TradingAccountSnapshot;
+          setup?: TradingAccountSetupStatus;
       };
 
 export type ActivityEvent = {
@@ -477,115 +582,133 @@ export type ActivityInput = {
     limit?: number;
 };
 
-export type RobinhoodAlphaWalletScore = {
-    walletAddress: string;
-    score: number;
-    tokenCount: number;
-    winningTokenCount: number;
-    winRate: number;
-    estimatedPnlUsd: number;
-    averageReturnPct: number;
-    sprayRatio: number;
-    copyOverlapRatio: number;
-    lastBuyAt: string;
-    explorerUrl: string;
-};
-
-export type RobinhoodAlphaSignal = {
-    signalId: string;
-    tokenAddress: string;
-    tokenName: string;
-    tokenSymbol: string;
-    poolAddress: string;
-    detectedAt: string;
-    windowMinutes: number;
-    qualifiedWalletCount: number;
-    qualifiedWallets: string[];
-    rosterAverageScore: number;
-    priceUsd: number;
-    liquidityUsd: number;
-    volume24hUsd: number;
-    poolAgeMinutes: number;
-    provisional: boolean;
-    geckoUrl: string;
-    explorerUrl: string;
-    disclaimer: string;
-};
-
-export type RobinhoodVolumeLeader = {
-    rank: number;
-    tokenAddress: string;
-    tokenName: string;
-    tokenSymbol: string;
-    poolAddress: string;
-    dex: string;
-    createdAt: string;
-    poolAgeMinutes: number;
-    isNewPair: boolean;
-    priceUsd: number;
-    priceChange24h: number;
-    liquidityUsd: number;
-    volume24hUsd: number;
-    volumeLiquidityRatio: number;
-    buys24h: number;
-    sells24h: number;
-    transactions24h: number;
-    geckoUrl: string;
-    explorerUrl: string;
-};
-
-export type RobinhoodVolumeSignal = Omit<RobinhoodVolumeLeader, "rank"> & {
-    signalId: string;
-    detectedAt: string;
-    reasons: Array<"new_pair" | "high_volume" | "volume_surge">;
-    previousVolume24hUsd: number;
-    volumeChangeUsd: number;
-    volumeChangeRatio: number | null;
-    provisional: boolean;
-    disclaimer: string;
-};
-
-export type RobinhoodAlphaResult =
+export type PerpsStatusResult =
     | {
           status: "not_configured";
           required?: string[];
       }
     | {
-          status: "not_ready";
-          chain: "robinhood";
-          chainId: 4663;
-          scannerEnabled: boolean;
-          warnings: string[];
+          status: "not_found" | "no_wallet";
+          telegramUserId: string;
       }
     | {
-          status: "ready" | "provisional";
-          chain: "robinhood";
-          chainId: 4663;
-          generatedAt: string;
-          nextScanAt: string;
-          observedHistoryDays: number;
-          summary: {
-              runnerPools: number;
-              observedTrades: number;
-              candidateWallets: number;
-              rosterWallets: number;
-              recentSignals: number;
-              volumePools?: number;
-              volumeLeaders?: number;
-              recentVolumeSignals?: number;
-          };
-          roster: RobinhoodAlphaWalletScore[];
-          signals: RobinhoodAlphaSignal[];
-          volumeLeaders?: RobinhoodVolumeLeader[];
-          volumeSignals?: RobinhoodVolumeSignal[];
-          warnings: string[];
-          lastError?: string;
+          status: "imperial_reconnect";
+          telegramUserId: string;
+      }
+    | {
+          status: "ready";
+          telegramUserId: string;
+          authorityWalletAddress: string;
+          profileAddress: string | null;
+          profileIndex: 1;
+          profileUsdc: number;
+          minimumProfileUsdc: 50;
+          funded: boolean;
+          fundingLocation: "imperial_profile";
+          imperialProfileVerified: boolean;
+          strategyReady: boolean;
+          liveExecutionEnabled: boolean;
+          blockers: string[];
+          checkedAt: string;
       };
 
-export type RobinhoodAlphaInput = {
-    frogxApiBaseUrl: string;
-    ftxApiToken?: string;
+export type DeltaNeutralPreview = {
+    strategy: "delta_neutral";
+    preset: "low";
+    wallet: string;
+    profileIndex: number;
+    profileAddress: string | null;
+    profileUsdc: number;
+    minimumProfileUsdc: 50;
+    profileFunded: boolean;
+    liveReady: boolean;
+    liveEntryCapUsd: 60;
+    maxCycles: 1;
+    blockers: string[];
 };
+
+export type DeltaNeutralRunStatus = {
+    strategy: "delta_neutral";
+    preset: "low";
+    wallet: string;
+    runId: string | null;
+    launching: boolean;
+    running: boolean;
+    stopRequested: boolean;
+    completedCycles: number;
+    maxCycles: 1;
+    dailyBudgetUsd: 5;
+    estimatedRunCostUsd: number;
+    completedVolumeUsd: number;
+    startedAtUnix: number | null;
+    stoppedAtUnix: number | null;
+    lastMessage: string | null;
+    failed: boolean;
+};
+
+export type DeltaNeutralStoredRunStatus = {
+    strategy: "delta_neutral";
+    preset: "low";
+    wallet: string;
+    runId: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type DeltaNeutralRun =
+    | DeltaNeutralRunStatus
+    | DeltaNeutralStoredRunStatus;
+
+export type DeltaNeutralUnavailableResult =
+    | {
+          status: "not_configured";
+          required?: string[];
+      }
+    | {
+          status: "unavailable" | "blocked" | "pending_reconciliation";
+          error: string;
+          retryable?: boolean;
+          runId?: string;
+          run?: DeltaNeutralRun;
+      };
+
+export type DeltaNeutralPreviewResult =
+    | {
+          status: "ready";
+          defaultStrategy: "delta_neutral";
+          defaultPreset: "low";
+          preview: DeltaNeutralPreview;
+          liveExecutionEnabled: boolean;
+      }
+    | DeltaNeutralUnavailableResult;
+
+export type DeltaNeutralStartResult =
+    | {
+          status: string;
+          idempotent: boolean;
+          run: DeltaNeutralRun;
+      }
+    | DeltaNeutralUnavailableResult;
+
+export type DeltaNeutralStatusResult =
+    | {
+          status: "ready";
+          defaultStrategy: "delta_neutral";
+          defaultPreset: "low";
+          configured: boolean;
+          enabled: boolean;
+          liveExecutionEnabled: boolean;
+          run: DeltaNeutralRun | null;
+      }
+    | DeltaNeutralUnavailableResult;
+
+export type DeltaNeutralStopResult =
+    | {
+          status: string;
+          run: DeltaNeutralRunStatus;
+      }
+    | DeltaNeutralUnavailableResult;
 
 export type ReferralSummary = {
     telegramUserId: string;
@@ -644,6 +767,24 @@ export type ControlCodeResult =
           code: string;
           expiresAt: string;
           controlUrl?: string | null;
+      };
+
+export type SetupResetInput = {
+    frogxApiBaseUrl: string;
+    ftxApiToken?: string;
+    telegramUserId: string;
+};
+
+export type SetupResetResult =
+    | {
+          status: "not_configured";
+          required?: string[];
+      }
+    | {
+          status: "reset";
+          telegramUserId: string;
+          walletAddress: string | null;
+          resetAt: string;
       };
 
 export type SwapBuildInput = {
@@ -1877,12 +2018,12 @@ export type TradingWalletResult =
           required?: string[];
       }
     | {
-      status: "ready";
-      walletSource: "external";
-      solanaWalletAddress: string;
-      activeWalletId?: string;
-      wallets?: TradingAccountWallet[];
-      account?: TradingAccountSnapshot;
+          status: "ready";
+          walletSource: "external";
+          solanaWalletAddress: string;
+          activeWalletId?: string;
+          wallets?: TradingAccountWallet[];
+          account?: TradingAccountSnapshot;
       }
     | {
           status: "ready";
@@ -1996,24 +2137,174 @@ export async function fetchActivity(
     return (await response.json()) as ActivityResult;
 }
 
-export async function fetchRobinhoodAlphaSignals(
-    input: RobinhoodAlphaInput
-): Promise<RobinhoodAlphaResult> {
+export async function fetchPerpsStatus(
+    input: TradingAccountInput
+): Promise<PerpsStatusResult> {
     const headers: Record<string, string> = {};
     if (input.ftxApiToken) {
         headers.Authorization = `Bearer ${input.ftxApiToken}`;
     }
 
     const response = await fetch(
-        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/robinhood-alpha`,
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/perps/status?telegramUserId=${encodeURIComponent(input.telegramUserId)}`,
         { headers }
     );
-    if (!response.ok && response.status !== 503) {
+
+    if (response.status === 409) {
+        return {
+            status: "imperial_reconnect",
+            telegramUserId: input.telegramUserId,
+        };
+    }
+
+    if (!response.ok && response.status !== 503 && response.status !== 404) {
         throw new Error(
-            `FrogX Robinhood alpha fetch failed with status ${response.status}`
+            `FrogX Perps status fetch failed with status ${response.status}`
         );
     }
-    return (await response.json()) as RobinhoodAlphaResult;
+
+    return (await response.json()) as PerpsStatusResult;
+}
+
+export async function previewDeltaNeutral(
+    input: TradingAccountInput
+): Promise<DeltaNeutralPreviewResult> {
+    const response = await postDeltaNeutralRequest(input, "preview");
+    const data = await response.json().catch(() => null);
+    const unavailable = deltaNeutralUnavailableResult(response, data);
+    if (unavailable) return unavailable;
+
+    const record = objectRecord(data);
+    const preview = deltaNeutralPreview(record?.preview);
+    if (
+        !response.ok ||
+        record?.status !== "ready" ||
+        record.defaultStrategy !== "delta_neutral" ||
+        record.defaultPreset !== "low" ||
+        typeof record.liveExecutionEnabled !== "boolean" ||
+        !preview
+    ) {
+        throw new Error(
+            "FrogX Delta Neutral preview returned a malformed response"
+        );
+    }
+    return {
+        status: "ready",
+        defaultStrategy: "delta_neutral",
+        defaultPreset: "low",
+        preview,
+        liveExecutionEnabled: record.liveExecutionEnabled,
+    };
+}
+
+export async function startDeltaNeutral(
+    input: TradingAccountInput & {
+        idempotencyKey: string;
+        confirmLive: true;
+    }
+): Promise<DeltaNeutralStartResult> {
+    const response = await postDeltaNeutralRequest(input, "start", {
+        idempotencyKey: input.idempotencyKey,
+        confirmLive: input.confirmLive,
+    });
+    const data = await response.json().catch(() => null);
+    const unavailable = deltaNeutralUnavailableResult(response, data);
+    if (unavailable) return unavailable;
+
+    const record = objectRecord(data);
+    const run = deltaNeutralRun(record?.run);
+    if (
+        !response.ok ||
+        typeof record?.status !== "string" ||
+        typeof record.idempotent !== "boolean" ||
+        !run
+    ) {
+        throw new Error(
+            "FrogX Delta Neutral start returned a malformed response"
+        );
+    }
+    return {
+        status: record.status,
+        idempotent: record.idempotent,
+        run,
+    };
+}
+
+export async function fetchDeltaNeutralStatus(
+    input: TradingAccountInput
+): Promise<DeltaNeutralStatusResult> {
+    const response = await postDeltaNeutralRequest(input, "status");
+    const data = await response.json().catch(() => null);
+    const unavailable = deltaNeutralUnavailableResult(response, data);
+    if (unavailable) return unavailable;
+
+    const record = objectRecord(data);
+    const run = record?.run === null ? null : deltaNeutralRun(record?.run);
+    if (
+        !response.ok ||
+        record?.status !== "ready" ||
+        record.defaultStrategy !== "delta_neutral" ||
+        record.defaultPreset !== "low" ||
+        typeof record.configured !== "boolean" ||
+        typeof record.enabled !== "boolean" ||
+        typeof record.liveExecutionEnabled !== "boolean" ||
+        run === undefined
+    ) {
+        throw new Error(
+            "FrogX Delta Neutral status returned a malformed response"
+        );
+    }
+    return {
+        status: "ready",
+        defaultStrategy: "delta_neutral",
+        defaultPreset: "low",
+        configured: record.configured,
+        enabled: record.enabled,
+        liveExecutionEnabled: record.liveExecutionEnabled,
+        run,
+    };
+}
+
+export async function stopDeltaNeutral(
+    input: TradingAccountInput
+): Promise<DeltaNeutralStopResult> {
+    const response = await postDeltaNeutralRequest(input, "stop");
+    const data = await response.json().catch(() => null);
+    const unavailable = deltaNeutralUnavailableResult(response, data);
+    if (unavailable) return unavailable;
+
+    const record = objectRecord(data);
+    const run = deltaNeutralRunStatus(record?.run);
+    if (!response.ok || typeof record?.status !== "string" || !run) {
+        throw new Error(
+            "FrogX Delta Neutral stop returned a malformed response"
+        );
+    }
+    return { status: record.status, run };
+}
+
+async function postDeltaNeutralRequest(
+    input: TradingAccountInput,
+    action: "preview" | "start" | "status" | "stop",
+    body: Record<string, unknown> = {}
+): Promise<Response> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+    };
+    if (input.ftxApiToken) {
+        headers.Authorization = `Bearer ${input.ftxApiToken}`;
+    }
+    return fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/perps/delta-neutral/${action}`,
+        {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                ...body,
+            }),
+        }
+    );
 }
 
 export async function fetchReferralSummary(
@@ -2104,6 +2395,36 @@ export async function requestControlCode(
     }
 
     return (await response.json()) as ControlCodeResult;
+}
+
+export async function resetTradingSetup(
+    input: SetupResetInput
+): Promise<SetupResetResult> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+    };
+    if (input.ftxApiToken) {
+        headers.Authorization = `Bearer ${input.ftxApiToken}`;
+    }
+
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/setup/reset`,
+        {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+            }),
+        }
+    );
+
+    if (!response.ok && response.status !== 503) {
+        throw new Error(
+            `FrogX setup reset failed with status ${response.status}`
+        );
+    }
+
+    return (await response.json()) as SetupResetResult;
 }
 
 export async function buildSwapTransaction(
@@ -3960,6 +4281,168 @@ export async function fetchNftHoldings(
     return (await response.json()) as NftHoldingsResult;
 }
 
+function tradingBotHeaders(ftxApiToken?: string): Record<string, string> {
+    return {
+        "Content-Type": "application/json",
+        ...(ftxApiToken ? { Authorization: `Bearer ${ftxApiToken}` } : {}),
+    };
+}
+
+async function readFrogTradeResponse(
+    response: Response
+): Promise<FrogTradeExecutionResult> {
+    let body: FrogTradeExecutionResult;
+    try {
+        body = (await response.json()) as FrogTradeExecutionResult;
+    } catch {
+        throw new Error(`Frog NFT trade failed with status ${response.status}`);
+    }
+    if (!response.ok && !body.status) {
+        return {
+            status: "failed",
+            error: body.error || `Frog NFT trade failed (${response.status})`,
+            code: body.code,
+        };
+    }
+    return body;
+}
+
+export async function fetchFrogMarket(
+    input: FrogMarketInput
+): Promise<FrogMarketResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/frogs/market`,
+        {
+            method: "POST",
+            headers: tradingBotHeaders(input.ftxApiToken),
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                walletAddress: input.walletAddress,
+            }),
+        }
+    );
+    const body = (await response.json()) as FrogMarketResult & {
+        code?: string;
+        error?: string;
+    };
+    if (!response.ok) {
+        return {
+            status: "unavailable",
+            code: body.code,
+            error: body.error || "Magic Eden market data is unavailable.",
+        };
+    }
+    return body;
+}
+
+export async function fetchFrogTopOffer(
+    input: Pick<FrogMarketInput, "frogxApiBaseUrl">
+): Promise<FrogTopOfferResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/magic-eden/top-offer`
+    );
+    const body = (await response.json()) as {
+        offer?: Extract<FrogTopOfferResult, { status: "ready" }>["offer"];
+        code?: string;
+        error?: string;
+    };
+    if (!response.ok || !body.offer) {
+        return {
+            status: "unavailable",
+            code: body.code,
+            error: body.error || "No live Magic Eden offer is available.",
+        };
+    }
+    return { status: "ready", offer: body.offer };
+}
+
+export async function executeFrogBuy(
+    input: FrogBuyExecutionInput
+): Promise<FrogTradeExecutionResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/frogs/execute-buy`,
+        {
+            method: "POST",
+            headers: tradingBotHeaders(input.ftxApiToken),
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                walletAddress: input.walletAddress,
+                executionId: input.executionId,
+                maximumPaymentLamports: input.maximumPaymentLamports,
+                ...(input.expectedMint
+                    ? { expectedMint: input.expectedMint }
+                    : {}),
+                ...(input.excludedMints?.length
+                    ? { excludedMints: input.excludedMints }
+                    : {}),
+            }),
+        }
+    );
+    return readFrogTradeResponse(response);
+}
+
+export async function fetchFrogBuyExecutionStatus(
+    input: FrogBuyExecutionInput
+): Promise<FrogTradeExecutionResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/trading-bot/frogs/execute-buy/status`,
+        {
+            method: "POST",
+            headers: tradingBotHeaders(input.ftxApiToken),
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                walletAddress: input.walletAddress,
+                executionId: input.executionId,
+                maximumPaymentLamports: input.maximumPaymentLamports,
+                ...(input.expectedMint
+                    ? { expectedMint: input.expectedMint }
+                    : {}),
+            }),
+        }
+    );
+    return readFrogTradeResponse(response);
+}
+
+export async function executeFrogSell(
+    input: FrogSellExecutionInput
+): Promise<FrogTradeExecutionResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/magic-eden/execute-sell`,
+        {
+            method: "POST",
+            headers: tradingBotHeaders(input.ftxApiToken),
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                walletAddress: input.walletAddress,
+                executionId: input.executionId,
+                mint: input.mint,
+                minimumPaymentLamports: input.minimumPaymentLamports,
+            }),
+        }
+    );
+    return readFrogTradeResponse(response);
+}
+
+export async function fetchFrogSellExecutionStatus(
+    input: FrogSellExecutionInput
+): Promise<FrogTradeExecutionResult> {
+    const response = await fetch(
+        `${cleanBaseUrl(input.frogxApiBaseUrl)}/api/frogx/magic-eden/execute-sell/status`,
+        {
+            method: "POST",
+            headers: tradingBotHeaders(input.ftxApiToken),
+            body: JSON.stringify({
+                telegramUserId: input.telegramUserId,
+                walletAddress: input.walletAddress,
+                executionId: input.executionId,
+                mint: input.mint,
+                minimumPaymentLamports: input.minimumPaymentLamports,
+            }),
+        }
+    );
+    return readFrogTradeResponse(response);
+}
+
 export async function fetchBuyQuote(input: BuyQuoteInput): Promise<FrogxQuote> {
     return fetchQuote({
         frogxApiBaseUrl: input.frogxApiBaseUrl,
@@ -4108,6 +4591,198 @@ async function fetchAdvancedAutomationExecutionStatus<Config>(
         );
     }
     return data as AdvancedAutomationExecutionStatusResult<Config>;
+}
+
+function deltaNeutralUnavailableResult(
+    response: Response,
+    value: unknown
+): DeltaNeutralUnavailableResult | null {
+    const record = objectRecord(value);
+    if (record?.status === "not_configured") {
+        const required = stringArray(record.required);
+        if (record.required !== undefined && !required) {
+            throw new Error(
+                "FrogX Delta Neutral returned malformed configuration requirements"
+            );
+        }
+        return {
+            status: "not_configured",
+            ...(required ? { required } : {}),
+        };
+    }
+    if (
+        response.ok &&
+        record?.status !== "blocked" &&
+        record?.status !== "pending_reconciliation"
+    ) {
+        return null;
+    }
+    if (typeof record?.error !== "string" || !record.error.trim()) {
+        throw new Error(
+            "FrogX Delta Neutral returned a malformed error response"
+        );
+    }
+    const status =
+        record.status === "blocked" ||
+        record.status === "pending_reconciliation"
+            ? record.status
+            : "unavailable";
+    const run = deltaNeutralRun(record.run);
+    return {
+        status,
+        error: record.error,
+        ...(typeof record.retryable === "boolean"
+            ? { retryable: record.retryable }
+            : {}),
+        ...(typeof record.runId === "string" ? { runId: record.runId } : {}),
+        ...(run ? { run } : {}),
+    };
+}
+
+function deltaNeutralPreview(value: unknown): DeltaNeutralPreview | null {
+    const record = objectRecord(value);
+    const blockers = stringArray(record?.blockers);
+    if (
+        record?.strategy !== "delta_neutral" ||
+        record.preset !== "low" ||
+        typeof record.wallet !== "string" ||
+        !record.wallet ||
+        record.profileIndex !== 1 ||
+        !(
+            record.profileAddress === null ||
+            typeof record.profileAddress === "string"
+        ) ||
+        !isFiniteNonNegativeNumber(record.profileUsdc) ||
+        record.minimumProfileUsdc !== 50 ||
+        typeof record.profileFunded !== "boolean" ||
+        typeof record.liveReady !== "boolean" ||
+        record.liveEntryCapUsd !== 60 ||
+        record.maxCycles !== 1 ||
+        !blockers
+    ) {
+        return null;
+    }
+    return {
+        strategy: "delta_neutral",
+        preset: "low",
+        wallet: record.wallet,
+        profileIndex: 1,
+        profileAddress: record.profileAddress as string | null,
+        profileUsdc: record.profileUsdc,
+        minimumProfileUsdc: 50,
+        profileFunded: record.profileFunded,
+        liveReady: record.liveReady,
+        liveEntryCapUsd: 60,
+        maxCycles: 1,
+        blockers,
+    };
+}
+
+function deltaNeutralRun(value: unknown): DeltaNeutralRun | undefined {
+    return deltaNeutralRunStatus(value) ?? deltaNeutralStoredRunStatus(value);
+}
+
+function deltaNeutralRunStatus(value: unknown): DeltaNeutralRunStatus | null {
+    const record = objectRecord(value);
+    if (
+        record?.strategy !== "delta_neutral" ||
+        record.preset !== "low" ||
+        typeof record.wallet !== "string" ||
+        !record.wallet ||
+        !(
+            record.runId === null ||
+            (typeof record.runId === "string" && record.runId)
+        ) ||
+        typeof record.launching !== "boolean" ||
+        typeof record.running !== "boolean" ||
+        typeof record.stopRequested !== "boolean" ||
+        !isNonNegativeSafeInteger(record.completedCycles) ||
+        record.maxCycles !== 1 ||
+        record.dailyBudgetUsd !== 5 ||
+        !isFiniteNonNegativeNumber(record.estimatedRunCostUsd) ||
+        !isFiniteNonNegativeNumber(record.completedVolumeUsd) ||
+        !isNullableSafeInteger(record.startedAtUnix) ||
+        !isNullableSafeInteger(record.stoppedAtUnix) ||
+        !(
+            record.lastMessage === null ||
+            typeof record.lastMessage === "string"
+        ) ||
+        typeof record.failed !== "boolean"
+    ) {
+        return null;
+    }
+    return {
+        strategy: "delta_neutral",
+        preset: "low",
+        wallet: record.wallet,
+        runId: record.runId as string | null,
+        launching: record.launching,
+        running: record.running,
+        stopRequested: record.stopRequested,
+        completedCycles: record.completedCycles,
+        maxCycles: 1,
+        dailyBudgetUsd: 5,
+        estimatedRunCostUsd: record.estimatedRunCostUsd,
+        completedVolumeUsd: record.completedVolumeUsd,
+        startedAtUnix: record.startedAtUnix,
+        stoppedAtUnix: record.stoppedAtUnix,
+        lastMessage: record.lastMessage as string | null,
+        failed: record.failed,
+    };
+}
+
+function deltaNeutralStoredRunStatus(
+    value: unknown
+): DeltaNeutralStoredRunStatus | null {
+    const record = objectRecord(value);
+    if (
+        record?.strategy !== "delta_neutral" ||
+        record.preset !== "low" ||
+        typeof record.wallet !== "string" ||
+        !record.wallet ||
+        typeof record.runId !== "string" ||
+        !record.runId ||
+        typeof record.status !== "string" ||
+        !record.status ||
+        typeof record.createdAt !== "string" ||
+        typeof record.updatedAt !== "string"
+    ) {
+        return null;
+    }
+    return {
+        strategy: "delta_neutral",
+        preset: "low",
+        wallet: record.wallet,
+        runId: record.runId,
+        status: record.status,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+    };
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+}
+
+function stringArray(value: unknown): string[] | null {
+    return Array.isArray(value) &&
+        value.every((entry) => typeof entry === "string")
+        ? value
+        : null;
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isNullableSafeInteger(value: unknown): value is number | null {
+    return value === null || Number.isSafeInteger(value);
 }
 
 function cleanBaseUrl(url: string): string {

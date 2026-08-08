@@ -65,6 +65,25 @@ function createStore() {
 }
 
 describe("FTX activity alert projection", () => {
+    it("links executed transaction signatures on Solscan", () => {
+        const batch = buildActivityAlertBatch(
+            [
+                activityEvent(
+                    "swap-with-signature",
+                    "swap_executed",
+                    "2026-08-07T12:00:00.000Z",
+                    { signature: "confirmed-signature" }
+                ),
+            ],
+            [],
+            5
+        );
+
+        expect(batch.text).toContain(
+            "Solscan: https://solscan.io/tx/confirmed-signature"
+        );
+    });
+
     it("collapses duplicate swap and automation lifecycle rows", () => {
         const batch = buildActivityAlertBatch(
             [
@@ -141,6 +160,116 @@ describe("FTX activity alert projection", () => {
         expect(batch.notifications[0].eventIds).toEqual(
             expect.arrayContaining(["required", "resolved"])
         );
+    });
+
+    it("projects an Imperial connection as a clear Ribbot setup success", () => {
+        const batch = buildActivityAlertBatch(
+            [
+                activityEvent(
+                    "imperial-ready",
+                    "imperial_connected",
+                    "2026-07-12T12:00:00.000Z",
+                    {
+                        authorityWalletAddress:
+                            "So11111111111111111111111111111111111111112",
+                        profileAddress:
+                            "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+                    }
+                ),
+            ],
+            [],
+            5
+        );
+
+        expect(batch.notifications).toHaveLength(1);
+        expect(batch.notifications[0]).toMatchObject({
+            title: "Ribbot connected",
+            eventIds: ["imperial-ready"],
+        });
+        expect(batch.text).toBe(
+            [
+                "Ribbot is ready.",
+                "",
+                "Spot & NFT Wallet (Privy):",
+                "So11111111111111111111111111111111111111112",
+                "",
+                "Imperial Perps Wallet:",
+                "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+                "",
+                "Next:",
+                "Send SOL to the Spot & NFT Wallet for swaps and frogs.",
+                "Send at least 50 USDC on Solana to the Imperial Perps Wallet for perps trading.",
+            ].join("\n")
+        );
+        expect(batch.text).not.toContain("No funds moved");
+        expect(batch.text).not.toContain("positions were opened");
+        expect(batch.text).not.toContain("2026-07-12");
+    });
+
+    it("does not request a deposit until Imperial returns the profile PDA", () => {
+        const batch = buildActivityAlertBatch(
+            [
+                activityEvent(
+                    "imperial-pending",
+                    "imperial_connected",
+                    "2026-07-12T12:00:00.000Z",
+                    {
+                        authorityWalletAddress:
+                            "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+                        profileAddress: null,
+                        profileIndex: 1,
+                    }
+                ),
+            ],
+            [],
+            5
+        );
+
+        expect(batch.text).toBe(
+            ["Ribbot setup is almost ready.", "", "Next: tap /status."].join(
+                "\n"
+            )
+        );
+        expect(batch.text).not.toContain("send");
+        expect(batch.text).not.toContain(
+            "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY"
+        );
+    });
+
+    it("projects a confirmed Perps deposit without repeating the funding prompt", () => {
+        const batch = buildActivityAlertBatch(
+            [
+                activityEvent(
+                    "perps-funded",
+                    "imperial_deposit_confirmed",
+                    "2026-07-31T03:00:00.000Z",
+                    {
+                        profileAddress:
+                            "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+                        uiAmountString: "70.67903",
+                    }
+                ),
+            ],
+            [],
+            5
+        );
+
+        expect(batch.notifications).toHaveLength(1);
+        expect(batch.notifications[0]).toMatchObject({
+            title: "Deposit received: 70.67903 USDC",
+            detail: "Your Imperial Perps Wallet is funded.",
+            eventIds: ["perps-funded"],
+        });
+        expect(batch.text).toBe(
+            [
+                "Deposit received: 70.67903 USDC",
+                "",
+                "Your Imperial Perps Wallet is funded.",
+                "",
+                "Next: Ribbot will message you when farming is ready.",
+            ].join("\n")
+        );
+        expect(batch.text).not.toContain("send at least 50 USDC");
     });
 
     it("collapses a review resolution into the matching terminal trade update", () => {
@@ -288,7 +417,8 @@ describe("FTX activity alert polling", () => {
         expect(delivered.messagesSent).toBe(1);
         expect(sendMessage).toHaveBeenCalledWith(
             user.telegramUserId,
-            expect.stringContaining("Buy executed")
+            expect.stringContaining("Buy executed"),
+            "activity"
         );
 
         now += 60_000;
@@ -308,6 +438,76 @@ describe("FTX activity alert polling", () => {
         expect(reloaded.activityAlertCursor?.seenEventIds).toEqual(
             expect.arrayContaining(["existing", "new-swap"])
         );
+    });
+
+    it("delivers a recent Imperial success on the first poll without replaying old events", async () => {
+        const { store, user } = createStore();
+        const now = Date.parse("2026-07-12T12:05:00.000Z");
+        const events = [
+            activityEvent(
+                "imperial-ready",
+                "imperial_connected",
+                "2026-07-12T12:04:00.000Z",
+                {
+                    profileAddress:
+                        "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY",
+                }
+            ),
+            activityEvent(
+                "old-imperial",
+                "imperial_connected",
+                "2026-07-12T11:00:00.000Z",
+                {
+                    profileAddress:
+                        "OldWallet11111111111111111111111111111111111",
+                }
+            ),
+            activityEvent(
+                "old-trade",
+                "swap_executed",
+                "2026-07-12T11:30:00.000Z"
+            ),
+        ];
+        const sendMessage = vi.fn(async () => undefined);
+        const poller = new ActivityAlertPoller({
+            enabled: true,
+            tgTrader: true,
+            frogxApiBaseUrl: "https://frogx.example",
+            ftxApiToken: "test-token",
+            pollIntervalMs: 30_000,
+            maxUsersPerPoll: 25,
+            maxEventsPerMessage: 5,
+            store,
+            sendMessage,
+            fetchActivity: async () => readyActivity(events),
+            now: () => new Date(now),
+        });
+
+        const firstPoll = await poller.pollOnce();
+        expect(firstPoll).toMatchObject({
+            usersBaselined: 1,
+            messagesSent: 1,
+        });
+        expect(sendMessage).toHaveBeenCalledWith(
+            user.telegramUserId,
+            expect.stringContaining("Ribbot is ready."),
+            "onboarding"
+        );
+        expect(sendMessage).toHaveBeenCalledWith(
+            user.telegramUserId,
+            expect.stringContaining("Imperial Perps Wallet:"),
+            "onboarding"
+        );
+        expect(store.getActivityAlertCursor(user)?.seenEventIds).toEqual(
+            expect.arrayContaining([
+                "imperial-ready",
+                "old-imperial",
+                "old-trade",
+            ])
+        );
+
+        expect((await poller.pollOnce()).messagesSent).toBe(0);
+        expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
     it("keeps failed deliveries unseen and retries after durable backoff", async () => {
