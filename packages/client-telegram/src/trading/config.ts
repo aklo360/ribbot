@@ -4,6 +4,8 @@ export type SettingsSource = {
 
 export type TradingConfig = {
     tgTrader: boolean;
+    spotEnabled: boolean;
+    nftTradingEnabled: boolean;
     tradingEnabled: boolean;
     dryRun: boolean;
     quotePreviewsEnabled: boolean;
@@ -12,10 +14,6 @@ export type TradingConfig = {
     activityAlertPollIntervalMs: number;
     activityAlertMaxUsersPerPoll: number;
     activityAlertMaxEventsPerMessage: number;
-    alphaAlertsEnabled: boolean;
-    alphaAlertPollIntervalMs: number;
-    alphaAlertMaxUsersPerPoll: number;
-    alphaAlertMaxSignalsPerMessage: number;
     frogxApiBaseUrl: string;
     ftxApiToken?: string;
     stateFile: string;
@@ -74,6 +72,14 @@ export function loadTradingConfig(runtime: SettingsSource): TradingConfig {
 
     return {
         tgTrader,
+        spotEnabled: parseBoolean(
+            getSetting(runtime, "RIBBOT_SPOT_ENABLED"),
+            false
+        ),
+        nftTradingEnabled: parseBoolean(
+            getSetting(runtime, "RIBBOT_NFT_TRADING_ENABLED"),
+            false
+        ),
         tradingEnabled,
         dryRun: parseBoolean(
             getSetting(runtime, "RIBBOT_TRADING_DRY_RUN"),
@@ -111,31 +117,6 @@ export function loadTradingConfig(runtime: SettingsSource): TradingConfig {
             5,
             1,
             10
-        ),
-        alphaAlertsEnabled: parseBoolean(
-            getSetting(runtime, "RIBBOT_ALPHA_ALERTS_ENABLED"),
-            false
-        ),
-        alphaAlertPollIntervalMs: getBoundedIntegerSetting(
-            runtime,
-            "RIBBOT_ALPHA_ALERT_POLL_INTERVAL_MS",
-            30_000,
-            10_000,
-            300_000
-        ),
-        alphaAlertMaxUsersPerPoll: getBoundedIntegerSetting(
-            runtime,
-            "RIBBOT_ALPHA_ALERT_MAX_USERS_PER_POLL",
-            25,
-            1,
-            100
-        ),
-        alphaAlertMaxSignalsPerMessage: getBoundedIntegerSetting(
-            runtime,
-            "RIBBOT_ALPHA_ALERT_MAX_SIGNALS_PER_MESSAGE",
-            3,
-            1,
-            5
         ),
         frogxApiBaseUrl:
             getSetting(runtime, "FROGX_API_BASE_URL") ||

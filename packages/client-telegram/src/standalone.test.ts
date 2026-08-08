@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { validateStandaloneEnvironment } from "./standalone.ts";
+import type { Context } from "telegraf";
+
+import {
+    isPrivateChat,
+    validateStandaloneEnvironment,
+} from "./standalone.ts";
 
 describe("standalone Ribbot configuration", () => {
     it("requires Telegram, FTX authentication, and the command gate", () => {
@@ -19,5 +24,28 @@ describe("standalone Ribbot configuration", () => {
                 TG_TRADER: "true",
             })
         ).toEqual([]);
+    });
+});
+
+describe("standalone Ribbot chat scope", () => {
+    it("accepts private DMs", () => {
+        expect(
+            isPrivateChat({
+                chat: { id: 123, type: "private" },
+            } as Context)
+        ).toBe(true);
+    });
+
+    it.each(["group", "supergroup", "channel"] as const)(
+        "ignores %s updates",
+        (type) => {
+            expect(
+                isPrivateChat({ chat: { id: -123, type } } as Context)
+            ).toBe(false);
+        }
+    );
+
+    it("ignores updates without a chat", () => {
+        expect(isPrivateChat({} as Context)).toBe(false);
     });
 });

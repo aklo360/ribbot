@@ -34,6 +34,10 @@ export function createEnvironmentSettings(
     };
 }
 
+export function isPrivateChat(ctx: Context): boolean {
+    return ctx.chat?.type === "private";
+}
+
 async function start(): Promise<void> {
     const missing = validateStandaloneEnvironment(process.env);
     if (missing.length > 0) {
@@ -55,6 +59,11 @@ async function start(): Promise<void> {
         bot,
         createEnvironmentSettings(process.env)
     );
+
+    bot.use(async (ctx, next) => {
+        if (!isPrivateChat(ctx)) return;
+        await next();
+    });
 
     bot.on("message", async (ctx) => {
         try {

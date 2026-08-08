@@ -407,10 +407,6 @@ export type ActivityAlertCursor = {
     nextAttemptAt?: string;
 };
 
-export type AlphaSignalCursor = ActivityAlertCursor & {
-    volumeBaselineAt?: string;
-};
-
 export type TradingAccountWallet = {
     walletId: string;
     label: string;
@@ -419,6 +415,38 @@ export type TradingAccountWallet = {
     privyWalletId?: string;
     solanaWalletAddress: string;
     createdAt: string;
+};
+
+export type FrogTradeTicket = {
+    id: string;
+    side: "buy" | "sweep" | "sell" | "bulk_sell";
+    status:
+        | "pending_confirmation"
+        | "execution_pending"
+        | "partially_executed"
+        | "executed"
+        | "failed"
+        | "cancelled";
+    walletAddress: string;
+    quantity: number;
+    completed: number;
+    maximumPaymentLamports?: string;
+    expectedMint?: string;
+    minimumPaymentLamports?: string;
+    mint?: string;
+    name?: string;
+    mints?: string[];
+    names?: string[];
+    purchasedMints?: string[];
+    signatures: string[];
+    currentExecutionId?: string;
+    error?: string;
+    providerStatus?: number | null;
+    providerKind?: "authorization" | "transport" | "http";
+    providerCode?: string | null;
+    createdAt: string;
+    updatedAt: string;
+    expiresAt: string;
 };
 
 export type TradingUser = {
@@ -449,9 +477,8 @@ export type TradingUser = {
     autoBuyConfigs?: Record<string, AutoBuyConfig>;
     bundleBuyConfigs?: Record<string, BundleBuyConfig>;
     autoSellConfigs?: Record<string, AutoSellConfig>;
+    frogTradeTickets?: Record<string, FrogTradeTicket>;
     activityAlertCursor?: ActivityAlertCursor;
-    alphaSignalsEnabled?: boolean;
-    alphaSignalCursor?: AlphaSignalCursor;
     settings: TradingUserSettings;
 };
 
@@ -539,7 +566,10 @@ export class TradingStateStore {
                 existing.wallets = [
                     {
                         walletId,
-                        label: "Wallet 1",
+                        label:
+                            existing.walletSource === "privy"
+                                ? "Spot & NFT Wallet (Privy)"
+                                : "Portfolio Wallet (Read only)",
                         walletSource: existing.walletSource,
                         ...(existing.privyUserId
                             ? { privyUserId: existing.privyUserId }
@@ -552,6 +582,18 @@ export class TradingStateStore {
                     },
                 ];
                 existing.activeWalletId = walletId;
+            }
+            existing.wallets = cleanAccountWallets(existing.wallets ?? []);
+            const managedWallet = existing.wallets.find(
+                (wallet) => wallet.walletSource === "privy"
+            );
+            if (managedWallet) {
+                existing.walletSource = "privy";
+                existing.privyUserId = managedWallet.privyUserId;
+                existing.privyWalletId = managedWallet.privyWalletId;
+                existing.solanaWalletAddress =
+                    managedWallet.solanaWalletAddress;
+                existing.activeWalletId = managedWallet.walletId;
             }
             existing.watchlist ??= [];
             existing.hiddenTokens ??= [];
@@ -594,6 +636,7 @@ export class TradingStateStore {
             existing.autoBuyConfigs ??= {};
             existing.bundleBuyConfigs ??= {};
             existing.autoSellConfigs ??= {};
+            existing.frogTradeTickets ??= {};
             if (existing.activityAlertCursor) {
                 existing.activityAlertCursor.seenEventIds =
                     cleanActivityAlertEventIds(
@@ -602,17 +645,6 @@ export class TradingStateStore {
                 existing.activityAlertCursor.consecutiveFailures =
                     cleanNonNegativeInteger(
                         existing.activityAlertCursor.consecutiveFailures
-                    );
-            }
-            existing.alphaSignalsEnabled ??= false;
-            if (existing.alphaSignalCursor) {
-                existing.alphaSignalCursor.seenEventIds =
-                    cleanActivityAlertEventIds(
-                        existing.alphaSignalCursor.seenEventIds
-                    );
-                existing.alphaSignalCursor.consecutiveFailures =
-                    cleanNonNegativeInteger(
-                        existing.alphaSignalCursor.consecutiveFailures
                     );
             }
             existing.settings ??= {
@@ -674,7 +706,7 @@ export class TradingStateStore {
             autoBuyConfigs: {},
             bundleBuyConfigs: {},
             autoSellConfigs: {},
-            alphaSignalsEnabled: false,
+            frogTradeTickets: {},
             settings: {
                 botMode: "advanced",
                 confirmTrades: defaults.confirmTrades,
@@ -698,6 +730,65 @@ export class TradingStateStore {
         state.users[telegramUserId] = user;
         this.persist();
         return user;
+    }
+
+    createFrogTradeTicket(
+        user: TradingUser,
+        ticket: Omit<
+            FrogTradeTicket,
+            | "id"
+            | "status"
+            | "completed"
+            | "signatures"
+            | "createdAt"
+            | "updatedAt"
+            | "expiresAt"
+        >
+    ): FrogTradeTicket {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        const now = new Date();
+        const value: FrogTradeTicket = {
+            ...ticket,
+            id: createOrderId("frog"),
+            status: "pending_confirmation",
+            completed: 0,
+            signatures: [],
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+            expiresAt: new Date(now.getTime() + 2 * 60 * 1000).toISOString(),
+        };
+        current.frogTradeTickets ??= {};
+        current.frogTradeTickets[value.id] = value;
+        current.updatedAt = value.updatedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return value;
+    }
+
+    getFrogTradeTicket(
+        user: TradingUser,
+        ticketId: string
+    ): FrogTradeTicket | undefined {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        return current.frogTradeTickets?.[ticketId];
+    }
+
+    updateFrogTradeTicket(
+        user: TradingUser,
+        ticketId: string,
+        update: Partial<Omit<FrogTradeTicket, "id" | "createdAt">>
+    ): FrogTradeTicket | undefined {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        const ticket = current.frogTradeTickets?.[ticketId];
+        if (!ticket) return undefined;
+        Object.assign(ticket, update, { updatedAt: new Date().toISOString() });
+        current.updatedAt = ticket.updatedAt;
+        state.users[user.telegramUserId] = current;
+        this.persist();
+        return ticket;
     }
 
     addToWatchlist(user: TradingUser, mint: string): TradingUser {
@@ -797,6 +888,16 @@ export class TradingStateStore {
             account.activeWalletId ?? current.activeWalletId;
         if (account.wallets) {
             current.wallets = cleanAccountWallets(account.wallets);
+            const managedWallet = current.wallets.find(
+                (wallet) => wallet.walletSource === "privy"
+            );
+            if (managedWallet) {
+                current.walletSource = "privy";
+                current.privyUserId = managedWallet.privyUserId;
+                current.privyWalletId = managedWallet.privyWalletId;
+                current.solanaWalletAddress = managedWallet.solanaWalletAddress;
+                current.activeWalletId = managedWallet.walletId;
+            }
         }
         current.walletClaimRequestedAt =
             account.walletClaimRequestedAt ?? current.walletClaimRequestedAt;
@@ -873,8 +974,7 @@ export class TradingStateStore {
                 instantAutoBuyEnabled:
                     account.settings.instantAutoBuyEnabled ??
                     current.settings.instantAutoBuyEnabled,
-                instantAutoBuyAmountSol: account.settings
-                    .instantAutoBuyAmountIn
+                instantAutoBuyAmountSol: account.settings.instantAutoBuyAmountIn
                     ? solFromLamports(
                           account.settings.instantAutoBuyAmountIn,
                           current.settings.instantAutoBuyAmountSol
@@ -925,17 +1025,22 @@ export class TradingStateStore {
     setExternalWallet(user: TradingUser, address: string): TradingUser {
         const state = this.load();
         const current = state.users[user.telegramUserId] || user;
-        current.walletSource = "external";
-        current.solanaWalletAddress = address;
         const walletId = `external:${address}`;
-        current.activeWalletId = walletId;
         current.wallets = mergeAccountWallet(current.wallets, {
             walletId,
-            label: `Wallet ${(current.wallets?.length ?? 0) + 1}`,
+            label: "Portfolio Wallet (Read only)",
             walletSource: "external",
             solanaWalletAddress: address,
             createdAt: new Date().toISOString(),
         });
+        const managedWallet = current.wallets.find(
+            (wallet) => wallet.walletSource === "privy"
+        );
+        if (!managedWallet) {
+            current.walletSource = "external";
+            current.solanaWalletAddress = address;
+            current.activeWalletId = walletId;
+        }
         current.updatedAt = new Date().toISOString();
         state.users[user.telegramUserId] = current;
         this.persist();
@@ -957,15 +1062,20 @@ export class TradingStateStore {
         current.privyWalletId = wallet.privyWalletId;
         current.solanaWalletAddress = wallet.solanaWalletAddress;
         current.activeWalletId = wallet.privyWalletId;
-        current.wallets = mergeAccountWallet(current.wallets, {
-            walletId: wallet.privyWalletId,
-            label: `Wallet ${(current.wallets?.length ?? 0) + 1}`,
-            walletSource: "privy",
-            privyUserId: wallet.privyUserId,
-            privyWalletId: wallet.privyWalletId,
-            solanaWalletAddress: wallet.solanaWalletAddress,
-            createdAt: new Date().toISOString(),
-        });
+        current.wallets = cleanAccountWallets([
+            {
+                walletId: wallet.privyWalletId,
+                label: "Spot & NFT Wallet (Privy)",
+                walletSource: "privy",
+                privyUserId: wallet.privyUserId,
+                privyWalletId: wallet.privyWalletId,
+                solanaWalletAddress: wallet.solanaWalletAddress,
+                createdAt: new Date().toISOString(),
+            },
+            ...(current.wallets ?? []).filter(
+                (entry) => entry.walletSource === "external"
+            ),
+        ]);
         current.updatedAt = new Date().toISOString();
         state.users[user.telegramUserId] = current;
         this.persist();
@@ -1680,131 +1790,6 @@ export class TradingStateStore {
         );
     }
 
-    setAlphaSignalsEnabled(
-        user: TradingUser,
-        enabled: boolean
-    ): TradingUser {
-        const state = this.load();
-        const current = state.users[user.telegramUserId] || user;
-        current.alphaSignalsEnabled = enabled;
-        if (!enabled) delete current.alphaSignalCursor;
-        current.updatedAt = new Date().toISOString();
-        state.users[user.telegramUserId] = current;
-        this.persist();
-        return current;
-    }
-
-    getAlphaSignalCursor(user: TradingUser): AlphaSignalCursor | undefined {
-        const current = this.load().users[user.telegramUserId] || user;
-        return current.alphaSignalCursor;
-    }
-
-    initializeAlphaSignalCursor(
-        user: TradingUser,
-        signalIds: string[],
-        initializedAt: string
-    ): AlphaSignalCursor {
-        const state = this.load();
-        const current = state.users[user.telegramUserId] || user;
-        if (current.alphaSignalCursor) return current.alphaSignalCursor;
-        current.alphaSignalCursor = {
-            initializedAt,
-            seenEventIds: cleanActivityAlertEventIds(signalIds),
-            volumeBaselineAt: initializedAt,
-        };
-        current.updatedAt = initializedAt;
-        state.users[user.telegramUserId] = current;
-        this.persist();
-        return current.alphaSignalCursor;
-    }
-
-    baselineAlphaVolumeSignals(
-        user: TradingUser,
-        signalIds: string[],
-        baselinedAt: string
-    ): AlphaSignalCursor {
-        const state = this.load();
-        const current = state.users[user.telegramUserId] || user;
-        const cursor = current.alphaSignalCursor ?? {
-            initializedAt: baselinedAt,
-            seenEventIds: [],
-        };
-        cursor.seenEventIds = cleanActivityAlertEventIds([
-            ...signalIds,
-            ...cursor.seenEventIds,
-        ]);
-        cursor.volumeBaselineAt = baselinedAt;
-        current.alphaSignalCursor = cursor;
-        current.updatedAt = baselinedAt;
-        state.users[user.telegramUserId] = current;
-        this.persist();
-        return cursor;
-    }
-
-    markAlphaSignalsDelivered(
-        user: TradingUser,
-        signalIds: string[],
-        deliveredAt: string
-    ): AlphaSignalCursor {
-        return this.updateAlphaSignalCursor(user, signalIds, deliveredAt, {
-            lastDeliveredAt: deliveredAt,
-            consecutiveFailures: 0,
-        });
-    }
-
-    markAlphaSignalDeliveryFailed(
-        user: TradingUser,
-        failedAt: string,
-        nextAttemptAt: string
-    ): AlphaSignalCursor {
-        const state = this.load();
-        const current = state.users[user.telegramUserId] || user;
-        const cursor = current.alphaSignalCursor ?? {
-            initializedAt: failedAt,
-            seenEventIds: [],
-        };
-        cursor.consecutiveFailures = (cursor.consecutiveFailures ?? 0) + 1;
-        cursor.lastFailureAt = failedAt;
-        cursor.nextAttemptAt = nextAttemptAt;
-        current.alphaSignalCursor = cursor;
-        current.updatedAt = failedAt;
-        state.users[user.telegramUserId] = current;
-        this.persist();
-        return cursor;
-    }
-
-    private updateAlphaSignalCursor(
-        user: TradingUser,
-        signalIds: string[],
-        updatedAt: string,
-        delivery?: {
-            lastDeliveredAt: string;
-            consecutiveFailures: number;
-        }
-    ): AlphaSignalCursor {
-        const state = this.load();
-        const current = state.users[user.telegramUserId] || user;
-        const cursor = current.alphaSignalCursor ?? {
-            initializedAt: updatedAt,
-            seenEventIds: [],
-        };
-        cursor.seenEventIds = cleanActivityAlertEventIds([
-            ...signalIds,
-            ...cursor.seenEventIds,
-        ]);
-        if (delivery) {
-            cursor.lastDeliveredAt = delivery.lastDeliveredAt;
-            cursor.consecutiveFailures = delivery.consecutiveFailures;
-            delete cursor.lastFailureAt;
-            delete cursor.nextAttemptAt;
-        }
-        current.alphaSignalCursor = cursor;
-        current.updatedAt = updatedAt;
-        state.users[user.telegramUserId] = current;
-        this.persist();
-        return cursor;
-    }
-
     getActivityAlertCursor(user: TradingUser): ActivityAlertCursor | undefined {
         const current = this.load().users[user.telegramUserId] || user;
         return current.activityAlertCursor;
@@ -2022,8 +2007,10 @@ function cleanAccountWallets(value: unknown): TradingAccountWallet[] {
     if (!Array.isArray(value)) return [];
     const addressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
     const wallets: TradingAccountWallet[] = [];
+    let hasManagedWallet = false;
     for (const entry of value) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        if (!entry || typeof entry !== "object" || Array.isArray(entry))
+            continue;
         const wallet = entry as Partial<TradingAccountWallet>;
         if (
             !wallet.walletId ||
@@ -2032,6 +2019,7 @@ function cleanAccountWallets(value: unknown): TradingAccountWallet[] {
             !addressPattern.test(wallet.solanaWalletAddress) ||
             (wallet.walletSource === "privy" &&
                 (!wallet.privyUserId || !wallet.privyWalletId)) ||
+            (wallet.walletSource === "privy" && hasManagedWallet) ||
             wallets.some(
                 (current) =>
                     current.walletId === wallet.walletId ||
@@ -2042,17 +2030,19 @@ function cleanAccountWallets(value: unknown): TradingAccountWallet[] {
         }
         wallets.push({
             walletId: wallet.walletId,
-            label: wallet.label?.slice(0, 32) || `Wallet ${wallets.length + 1}`,
+            label:
+                wallet.walletSource === "privy"
+                    ? "Spot & NFT Wallet (Privy)"
+                    : "Portfolio Wallet (Read only)",
             walletSource: wallet.walletSource,
-            ...(wallet.privyUserId
-                ? { privyUserId: wallet.privyUserId }
-                : {}),
+            ...(wallet.privyUserId ? { privyUserId: wallet.privyUserId } : {}),
             ...(wallet.privyWalletId
                 ? { privyWalletId: wallet.privyWalletId }
                 : {}),
             solanaWalletAddress: wallet.solanaWalletAddress,
             createdAt: wallet.createdAt || new Date().toISOString(),
         });
+        if (wallet.walletSource === "privy") hasManagedWallet = true;
         if (wallets.length >= 10) break;
     }
     return wallets;
@@ -2071,7 +2061,11 @@ function mergeAccountWallet(
     if (existing) {
         return wallets.map((entry) =>
             entry.walletId === existing.walletId
-                ? { ...wallet, label: existing.label, createdAt: existing.createdAt }
+                ? {
+                      ...wallet,
+                      label: existing.label,
+                      createdAt: existing.createdAt,
+                  }
                 : entry
         );
     }
