@@ -1940,7 +1940,7 @@ export class TradingBot {
     private async replyFarmerHome(ctx: Context): Promise<void> {
         await ctx.reply(
             [
-                "Delta Neutral Farmer",
+                "Delta Neutral Perps Farmer",
                 "Powered by Imperial",
                 "",
                 "Runs one matched perps cycle to generate Imperial + Phoenix activity while reducing market-direction exposure.",
@@ -2662,7 +2662,7 @@ export class TradingBot {
                         "",
                         "Spot Trading — Coming Soon",
                         "",
-                        "/farm - open your Delta Neutral farmer",
+                        "/farm - open your Delta Neutral perps farmer",
                         "Powered by Imperial",
                         ...(this.config.nftTradingEnabled
                             ? [
@@ -9104,7 +9104,7 @@ export class TradingBot {
                         ? "/start - open Ribbot"
                         : "/start - connect your Frog Trading Exchange account",
                     "/spot - Spot Trading is coming soon",
-                    "/farm - open your Delta Neutral farmer",
+                    "/farm - open your Delta Neutral perps farmer",
                     "/status - check your Imperial Perps Wallet",
                     ...(this.config.nftTradingEnabled
                         ? [
