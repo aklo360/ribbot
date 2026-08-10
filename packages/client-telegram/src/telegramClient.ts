@@ -5,6 +5,7 @@ import { MessageManager } from "./messageManager.ts";
 import { getOrCreateRecommenderInBe } from "./getOrCreateRecommenderInBe.ts";
 import { parseBoolean } from "./trading/config.ts";
 import { TradingBot } from "./trading/TradingBot.ts";
+import { buildFrogContactSheet } from "./trading/frogContactSheet.ts";
 
 export class TelegramClient {
     private bot: Telegraf<Context>;
@@ -23,7 +24,9 @@ export class TelegramClient {
         this.backend = runtime.getSetting("BACKEND_URL");
         this.backendToken = runtime.getSetting("BACKEND_TOKEN");
         this.tgTrader = parseBoolean(runtime.getSetting("TG_TRADER"), false);
-        this.tradingBot = new TradingBot(this.bot, this.runtime);
+        this.tradingBot = new TradingBot(this.bot, this.runtime, {
+            buildFrogContactSheet,
+        });
         elizaLogger.log("✅ TelegramClient constructor completed");
     }
 

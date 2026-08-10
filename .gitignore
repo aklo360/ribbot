@@ -63,3 +63,4 @@ coverage/
 .turbo
 scraper/.git/
 .state/
+**/.wrangler/

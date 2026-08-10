@@ -478,15 +478,19 @@ export type TradingUser = {
     bundleBuyConfigs?: Record<string, BundleBuyConfig>;
     autoSellConfigs?: Record<string, AutoSellConfig>;
     frogTradeTickets?: Record<string, FrogTradeTicket>;
+    frogBulkSellPromptExpiresAt?: number;
     activityAlertCursor?: ActivityAlertCursor;
     settings: TradingUserSettings;
 };
 
-type StoreShape = {
+export type StoreShape = {
     users: Record<string, TradingUser>;
 };
 
 const defaultStore = (): StoreShape => ({ users: {} });
+
+const cloneStore = (state: StoreShape): StoreShape =>
+    JSON.parse(JSON.stringify(state)) as StoreShape;
 
 export type TradingDefaults = {
     confirmTrades: boolean;
@@ -535,11 +539,23 @@ export type StoredTradingAccountSnapshot = {
 };
 
 export class TradingStateStore {
-    private readonly filePath: string;
+    private readonly filePath?: string;
     private state: StoreShape | null = null;
 
-    constructor(filePath: string) {
-        this.filePath = path.resolve(process.cwd(), filePath);
+    constructor(source: string | StoreShape) {
+        if (typeof source === "string") {
+            this.filePath = path.resolve(process.cwd(), source);
+            return;
+        }
+        this.state = cloneStore(source);
+    }
+
+    static memory(snapshot: StoreShape = defaultStore()): TradingStateStore {
+        return new TradingStateStore(snapshot);
+    }
+
+    exportSnapshot(): StoreShape {
+        return cloneStore(this.load());
     }
 
     getOrCreateUser(
@@ -1790,6 +1806,27 @@ export class TradingStateStore {
         );
     }
 
+    getFrogBulkSellPromptExpiresAt(user: TradingUser): number | undefined {
+        return (this.load().users[user.telegramUserId] || user)
+            .frogBulkSellPromptExpiresAt;
+    }
+
+    setFrogBulkSellPromptExpiresAt(
+        user: TradingUser,
+        expiresAt?: number
+    ): void {
+        const state = this.load();
+        const current = state.users[user.telegramUserId] || user;
+        if (expiresAt === undefined) {
+            delete current.frogBulkSellPromptExpiresAt;
+        } else {
+            current.frogBulkSellPromptExpiresAt = expiresAt;
+        }
+        current.updatedAt = new Date().toISOString();
+        state.users[user.telegramUserId] = current;
+        this.persist();
+    }
+
     getActivityAlertCursor(user: TradingUser): ActivityAlertCursor | undefined {
         const current = this.load().users[user.telegramUserId] || user;
         return current.activityAlertCursor;
@@ -1910,6 +1947,11 @@ export class TradingStateStore {
     private load(): StoreShape {
         if (this.state) return this.state;
 
+        if (!this.filePath) {
+            this.state = defaultStore();
+            return this.state;
+        }
+
         try {
             const raw = fs.readFileSync(this.filePath, "utf8");
             this.state = JSON.parse(raw) as StoreShape;
@@ -1922,6 +1964,7 @@ export class TradingStateStore {
 
     private persist(): void {
         const state = this.load();
+        if (!this.filePath) return;
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         fs.writeFileSync(this.filePath, `${JSON.stringify(state, null, 2)}\n`, {
             mode: 0o600,

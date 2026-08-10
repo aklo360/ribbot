@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context, Telegraf } from "telegraf";
 
 import { controlUrlWithSession, TradingBot } from "./TradingBot.ts";
+import { buildFrogContactSheet } from "./frogContactSheet.ts";
 
 const originalFetch = globalThis.fetch;
 const tempFiles: string[] = [];
@@ -104,17 +105,21 @@ function tradingBot() {
     const bot = {
         telegram: { sendMessage: vi.fn(async () => undefined) },
     } as unknown as Telegraf<Context>;
-    return new TradingBot(bot, {
-        getSetting: (key) =>
-            ({
-                TG_TRADER: "true",
-                RIBBOT_SPOT_ENABLED: "false",
-                RIBBOT_NFT_TRADING_ENABLED: "true",
-                RIBBOT_FTX_API_TOKEN: "test-token",
-                FROGX_API_BASE_URL: "https://frogx.example",
-                RIBBOT_TRADING_STATE_FILE: stateFile,
-            })[key],
-    });
+    return new TradingBot(
+        bot,
+        {
+            getSetting: (key) =>
+                ({
+                    TG_TRADER: "true",
+                    RIBBOT_SPOT_ENABLED: "false",
+                    RIBBOT_NFT_TRADING_ENABLED: "true",
+                    RIBBOT_FTX_API_TOKEN: "test-token",
+                    FROGX_API_BASE_URL: "https://frogx.example",
+                    RIBBOT_TRADING_STATE_FILE: stateFile,
+                })[key],
+        },
+        { buildFrogContactSheet }
+    );
 }
 
 const authorityWalletAddress = "9p9UcNW4QaAcw6pRAMFtaJHuNChL6dFFnbYzARTnJSWY";
@@ -310,15 +315,17 @@ describe("Ribbot account-first beta", () => {
                 "",
                 "Let's set up your accounts.",
                 "",
-                "1. Spot & NFT trading on Frog Trading Exchange",
+                "1. Spot Trading — Coming Soon",
                 "",
-                "2. Perps powered by Imperial",
+                "2. NFT Trading on Frog Trading Exchange",
+                "",
+                "3. Perps powered by Imperial",
                 "",
                 "Privy secures your account and wallet key.",
             ].join("\n")
         );
         expect(String(reply.mock.calls[0][0])).toContain(
-            "1. Spot & NFT trading on Frog Trading Exchange"
+            "1. Spot Trading — Coming Soon"
         );
         const extra = reply.mock.calls[0][1] as {
             reply_markup?: {
@@ -372,6 +379,8 @@ describe("Ribbot account-first beta", () => {
             [
                 "Ribbot is ready.",
                 "",
+                "Spot Trading — Coming Soon",
+                "",
                 "/farm - open your Delta Neutral farmer",
                 "Powered by Imperial",
                 "",
@@ -387,6 +396,13 @@ describe("Ribbot account-first beta", () => {
             };
         };
         expect(extra.reply_markup?.inline_keyboard?.[0]).toEqual([
+            {
+                text: "Spot Trading — Coming Soon",
+                callback_data: "ribbot:spot",
+                hide: false,
+            },
+        ]);
+        expect(extra.reply_markup?.inline_keyboard?.[1]).toEqual([
             {
                 text: "Farm",
                 callback_data: "ribbot:farmer-home",
@@ -419,7 +435,30 @@ describe("Ribbot account-first beta", () => {
                 .map((button) => button.text) ?? [];
         expect(buttonLabels).not.toContain("Connect Account");
         expect(buttonLabels).toEqual(
-            expect.arrayContaining(["Perps Farmer", "Frogs", "Help"])
+            expect.arrayContaining([
+                "Spot Trading — Coming Soon",
+                "Perps Farmer",
+                "Frogs",
+                "Help",
+            ])
+        );
+    });
+
+    it("labels Spot Trading as coming soon without starting a trade", async () => {
+        const fetchMock = vi.fn();
+        globalThis.fetch = fetchMock;
+        const { ctx, reply } = context("/spot");
+
+        await expect(tradingBot().handleMessage(ctx)).resolves.toBe(true);
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(String(reply.mock.calls[0][0])).toBe(
+            [
+                "Spot Trading is coming soon.",
+                "Connect your Frog Trading Exchange account now and this same account will work here when Spot launches.",
+                "",
+                "No quote, order, signature, or transaction was created.",
+            ].join("\n")
         );
     });
 

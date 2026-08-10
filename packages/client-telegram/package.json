@@ -26,11 +26,15 @@
         "zod": "3.23.8"
     },
     "devDependencies": {
+        "@cloudflare/workers-types": "5.20260810.1",
         "tsup": "8.3.5"
     },
     "scripts": {
         "build": "tsup --format esm --dts && tsup src/standalone.ts --format esm --out-dir dist-standalone --clean --sourcemap",
         "build:standalone": "tsup src/standalone.ts --format esm --out-dir dist-standalone --clean --sourcemap",
+        "build:worker": "pnpm dlx wrangler@4.120.0 deploy --dry-run --config wrangler.toml",
+        "deploy:worker": "pnpm dlx wrangler@4.120.0 deploy --config wrangler.toml",
+        "typecheck:worker": "tsc --noEmit -p tsconfig.worker.json",
         "start:standalone": "node dist-standalone/standalone.js",
         "dev": "tsup --format esm --dts --watch",
         "lint": "eslint --fix  --cache ."
