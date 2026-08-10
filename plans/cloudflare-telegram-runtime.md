@@ -21,7 +21,7 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 - [x] (2026-08-10 02:20Z) Deployed FTX Pages deployment `6be72fd9` and Ribbot Worker version `0251c825-b026-417c-9c89-319290e149b4` from the laptop without starting a Mini process.
 - [x] (2026-08-10 02:30Z) Added and deployed FTX's non-breaking Cloudflare service-credential path as public commit `2971ce8`; all 280 API tests passed and production Worker version `fcdd8db3-1984-4784-99dc-6c835fe1d34e` accepted the new credential.
 - [x] (2026-08-10 02:35Z) Bound all three Ribbot production secrets through Cloudflare's secret manager. The Telegram token moved once through a zero-output pipe from the verified `llphant` secret file; it was not copied to the laptop or a repository. Production health now returns HTTP 200.
-- [ ] Register and verify the Telegram webhook. Paused because `getWebhookInfo` reports 116 pending updates: registration without dropping them may generate stale replies, while dropping them is irreversible and needs explicit approval.
+- [x] (2026-08-10 03:00Z) With explicit approval, discarded the remaining 115 queued updates and registered `@HeyRibbot` for `message` and `callback_query` delivery at the Cloudflare `/telegram` endpoint. Telegram reports the exact URL, zero pending updates, and no delivery error; Worker health returns HTTP 200.
 
 ## Surprises & Discoveries
 
@@ -68,9 +68,13 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
   Rationale: the additive `RIBBOT_CLOUDFLARE_TOKEN` path gives Cloudflare an independently managed credential without breaking an unknown legacy client or changing any execution gate.
   Date/Author: 2026-08-10 / LLPhant
 
+- Decision: discard Telegram's stale pre-cutover queue and start Cloudflare delivery clean.
+  Rationale: AKLO explicitly approved deletion after the queue was explained. The count fell from the earlier observed 116 to 115 before the atomic `setWebhook` call; processing stale commands could have generated obsolete replies or actions.
+  Date/Author: 2026-08-10 / LLPhant
+
 ## Outcomes & Retrospective
 
-Implementation, publication, Cloudflare deployment, and secret binding are complete. FTX accepts the new additive service credential, Ribbot health returns HTTP 200, Telegram identifies the migrated token as `@HeyRibbot` ID `8352807424`, and the verified Mini has no Ribbot application process or launcher. Webhook activation remains paused with Telegram unchanged because its 116 pending updates require an explicit delete-or-deliver decision; no `/start` message or other Telegram reply has been sent.
+Implementation, publication, Cloudflare deployment, secret binding, and Telegram cutover are complete. FTX accepts the new additive service credential; Ribbot health returns HTTP 200 with `runtime: cloudflare` and `configuration: ready`; Telegram identifies the bot as `@HeyRibbot` ID `8352807424` and reports the exact webhook URL with zero pending updates and no delivery error. The verified Mini has zero Ribbot application processes and zero matching launchers. No `/start` message or other Telegram reply was sent during deployment, so the first private user interaction remains the final user-visible functional check.
 
 ## Context and Orientation
 
@@ -141,3 +145,5 @@ Plan revision note (2026-08-10): updated after implementation and the local Work
 Plan revision note (2026-08-10): updated after GitHub publication and the failed production authentication gate; recorded exact commits, the unchanged public page, and the approval-gated Cloudflare/Ribbot credential blockers.
 
 Plan revision note (2026-08-10): updated after Cloudflare deployment and secret activation; replaced obsolete authentication blockers with the observed 116-update Telegram queue decision and recorded that no webhook write or Mini process occurred.
+
+Plan revision note (2026-08-10): completed after the explicitly approved clean queue cutover; recorded the verified Telegram webhook, ready Worker health, and zero Mini runtime state without claiming an unperformed private `/start` interaction.
