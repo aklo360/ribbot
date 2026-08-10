@@ -381,7 +381,7 @@ describe("Ribbot account-first beta", () => {
                 "",
                 "Spot Trading — Coming Soon",
                 "",
-                "/farm - open your Delta Neutral farmer",
+                "/farm - open your Delta Neutral perps farmer",
                 "Powered by Imperial",
                 "",
                 "/frogs - view and trade Solana Business Frogs",
@@ -543,7 +543,7 @@ describe("Ribbot account-first beta", () => {
         expect(fetchMock).not.toHaveBeenCalled();
         expect(String(reply.mock.calls[0][0])).toBe(
             [
-                "Delta Neutral Farmer",
+                "Delta Neutral Perps Farmer",
                 "Powered by Imperial",
                 "",
                 "Runs one matched perps cycle to generate Imperial + Phoenix activity while reducing market-direction exposure.",
