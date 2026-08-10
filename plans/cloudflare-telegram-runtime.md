@@ -18,8 +18,10 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 - [x] (2026-08-10 02:10Z) Implemented the Worker webhook, durable update ledger, SQLite user cache, scheduled maintenance, bounded Frog confirmation alarms, and focused tests.
 - [x] (2026-08-10 02:05Z) Proved the Worker bundle, Ribbot tests, type checks, and FTX `/ribbot` UI checks pass: 44 focused Ribbot tests, both Ribbot TypeScript targets, a 117.5 KiB gzip Wrangler bundle with no Sharp/libvips code, six FTX page tests, FTX TypeScript, and the production FTX Cloudflare build.
 - [x] (2026-08-10 02:15Z) Audited repository privacy and visibility, committed private Ribbot as `25f2e21` and public FTX as `5cb4960`, and pushed both to GitHub with each repository zero commits behind its remote.
-- [ ] Deploy the FTX page and Ribbot Worker without invoking the Mac Mini. Blocked: the laptop's saved Cloudflare OAuth token is expired, the approved scoped-token runbook requires explicit credential-creation approval, and the public FTX page still serves the previous Spot & NFT copy after the GitHub push.
-- [ ] Bind production secrets, register the Telegram webhook with stale updates dropped, and verify the live health/webhook state. This step is blocked until the Telegram bot token and shared FTX token are available through an approved secret path.
+- [x] (2026-08-10 02:20Z) Deployed FTX Pages deployment `6be72fd9` and Ribbot Worker version `0251c825-b026-417c-9c89-319290e149b4` from the laptop without starting a Mini process.
+- [x] (2026-08-10 02:30Z) Added and deployed FTX's non-breaking Cloudflare service-credential path as public commit `2971ce8`; all 280 API tests passed and production Worker version `fcdd8db3-1984-4784-99dc-6c835fe1d34e` accepted the new credential.
+- [x] (2026-08-10 02:35Z) Bound all three Ribbot production secrets through Cloudflare's secret manager. The Telegram token moved once through a zero-output pipe from the verified `llphant` secret file; it was not copied to the laptop or a repository. Production health now returns HTTP 200.
+- [ ] Register and verify the Telegram webhook. Paused because `getWebhookInfo` reports 116 pending updates: registration without dropping them may generate stale replies, while dropping them is irreversible and needs explicit approval.
 
 ## Surprises & Discoveries
 
@@ -41,6 +43,9 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 - Observation: GitHub publication did not update the production FTX page, and direct Wrangler deployment cannot authenticate from the laptop.
   Evidence: the public `/ribbot` JavaScript chunk still contains the old “Set up Spot & NFT trading” copy after both pushes; Wrangler 3.114.15 and 4.120.0 both report that the saved auth is expired, and `CLOUDFLARE_API_TOKEN` is absent.
 
+- Observation: Telegram has 116 pending updates and no existing webhook.
+  Evidence: the read-only `getWebhookInfo` response returned an empty URL and `pending_update_count: 116`. The attempted cutover was rejected before execution; Telegram configuration is unchanged.
+
 ## Decision Log
 
 - Decision: keep FTX as the only execution, Privy, signing, and policy control plane; move only Telegram delivery, non-secret cache persistence, and Telegram-side scheduling into Ribbot's Cloudflare Worker.
@@ -59,9 +64,13 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
   Rationale: it remains a useful development fallback and its file-backed state tests protect compatibility, while production ownership moves completely to Cloudflare.
   Date/Author: 2026-08-10 / LLPhant
 
+- Decision: add a second FTX credential for the Cloudflare Worker instead of rotating the unretrievable legacy token.
+  Rationale: the additive `RIBBOT_CLOUDFLARE_TOKEN` path gives Cloudflare an independently managed credential without breaking an unknown legacy client or changing any execution gate.
+  Date/Author: 2026-08-10 / LLPhant
+
 ## Outcomes & Retrospective
 
-The implementation and GitHub publication milestones are complete. The real local Worker returned durable health ready, rejected an unauthenticated webhook with HTTP 401, accepted a test update once, and returned `duplicate: true` on replay. Production deployment and activation remain blocked on an approved Cloudflare authentication refresh and the two existing Ribbot service credentials; no Mini process or access path was used.
+Implementation, publication, Cloudflare deployment, and secret binding are complete. FTX accepts the new additive service credential, Ribbot health returns HTTP 200, Telegram identifies the migrated token as `@HeyRibbot` ID `8352807424`, and the verified Mini has no Ribbot application process or launcher. Webhook activation remains paused with Telegram unchanged because its 116 pending updates require an explicit delete-or-deliver decision; no `/start` message or other Telegram reply has been sent.
 
 ## Context and Orientation
 
@@ -79,7 +88,7 @@ Next, update `packages/client-telegram/src/trading/TradingBot.ts` to accept inje
 
 Then add `packages/client-telegram/src/worker.ts` and `packages/client-telegram/wrangler.toml`. The public Worker accepts `GET /health` and `POST /telegram` only. The webhook route rejects a missing or incorrect `X-Telegram-Bot-Api-Secret-Token`, rejects invalid JSON or an invalid update ID, and forwards valid updates to the named coordinator. The coordinator initializes SQLite tables for users, processed update IDs, and metadata; it suppresses duplicates, loads only the relevant user for an update, calls Telegraf, and persists the resulting cache. Its alarm reconciles pending Frog tickets, and its maintenance route runs one activity pass, prunes old update IDs, and reschedules an alarm if work remains.
 
-Finally, add focused tests for authentication, duplicate suppression, state persistence, and Spot's no-action response. Run a Wrangler dry-run bundle to prove that native Sharp is absent from the Worker graph. After privacy checks and commits, deploy the FTX UI with its existing Pages command and deploy Ribbot with Wrangler. Production activation requires setting `TELEGRAM_BOT_TOKEN`, `RIBBOT_FTX_API_TOKEN`, and a newly generated `RIBBOT_WEBHOOK_SECRET` as Worker secrets, then calling Telegram `setWebhook` with the Worker URL, matching secret token, allowed message and callback updates, and `drop_pending_updates=true`.
+Finally, add focused tests for authentication, duplicate suppression, state persistence, and Spot's no-action response. Run a Wrangler dry-run bundle to prove that native Sharp is absent from the Worker graph. After privacy checks and commits, deploy the FTX UI with its existing Pages command and deploy Ribbot with Wrangler. Production activation requires setting `TELEGRAM_BOT_TOKEN`, `RIBBOT_FTX_API_TOKEN`, and a newly generated `RIBBOT_WEBHOOK_SECRET` as Worker secrets, then calling Telegram `setWebhook` with the Worker URL, matching secret token, and allowed message and callback updates. Because Telegram currently retains pending updates, the queue disposition must be explicitly approved before this final call.
 
 ## Concrete Steps
 
@@ -117,7 +126,7 @@ Expected health response:
 
     {"ok":true,"service":"ribbot","runtime":"cloudflare"}
 
-Required secret bindings, named only and never committed, are `TELEGRAM_BOT_TOKEN`, `RIBBOT_FTX_API_TOKEN`, and `RIBBOT_WEBHOOK_SECRET`. The production FTX API secret paired with Ribbot is `RIBBOT_TRADING_BOT_TOKEN`.
+Required secret bindings, named only and never committed, are `TELEGRAM_BOT_TOKEN`, `RIBBOT_FTX_API_TOKEN`, and `RIBBOT_WEBHOOK_SECRET`. The production FTX API secret paired with the Cloudflare Worker is the additive `RIBBOT_CLOUDFLARE_TOKEN`; legacy `RIBBOT_TRADING_BOT_TOKEN` and `FROGX_BOT_API_TOKEN` credentials remain accepted and unchanged.
 
 ## Interfaces and Dependencies
 
@@ -130,3 +139,5 @@ Plan revision note (2026-08-10): created after the runtime and credential audit 
 Plan revision note (2026-08-10): updated after implementation and the local Worker/Durable Object acceptance pass; recorded the supported compatibility date and narrowed the remaining work to final verification, publication, secret binding, and webhook activation.
 
 Plan revision note (2026-08-10): updated after GitHub publication and the failed production authentication gate; recorded exact commits, the unchanged public page, and the approval-gated Cloudflare/Ribbot credential blockers.
+
+Plan revision note (2026-08-10): updated after Cloudflare deployment and secret activation; replaced obsolete authentication blockers with the observed 116-update Telegram queue decision and recorded that no webhook write or Mini process occurred.
