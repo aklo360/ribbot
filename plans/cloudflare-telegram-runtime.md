@@ -17,7 +17,8 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 - [x] (2026-08-10 02:00Z) Implemented memory-backed `TradingStateStore` operation and durable bulk-sell prompt state while preserving the existing local-file standalone mode.
 - [x] (2026-08-10 02:10Z) Implemented the Worker webhook, durable update ledger, SQLite user cache, scheduled maintenance, bounded Frog confirmation alarms, and focused tests.
 - [x] (2026-08-10 02:05Z) Proved the Worker bundle, Ribbot tests, type checks, and FTX `/ribbot` UI checks pass: 44 focused Ribbot tests, both Ribbot TypeScript targets, a 117.5 KiB gzip Wrangler bundle with no Sharp/libvips code, six FTX page tests, FTX TypeScript, and the production FTX Cloudflare build.
-- [ ] Audit repository privacy and visibility, commit and push both repositories, and deploy the FTX page plus Ribbot Worker without invoking the Mac Mini.
+- [x] (2026-08-10 02:15Z) Audited repository privacy and visibility, committed private Ribbot as `25f2e21` and public FTX as `5cb4960`, and pushed both to GitHub with each repository zero commits behind its remote.
+- [ ] Deploy the FTX page and Ribbot Worker without invoking the Mac Mini. Blocked: the laptop's saved Cloudflare OAuth token is expired, the approved scoped-token runbook requires explicit credential-creation approval, and the public FTX page still serves the previous Spot & NFT copy after the GitHub push.
 - [ ] Bind production secrets, register the Telegram webhook with stale updates dropped, and verify the live health/webhook state. This step is blocked until the Telegram bot token and shared FTX token are available through an approved secret path.
 
 ## Surprises & Discoveries
@@ -36,6 +37,9 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 
 - Observation: Wrangler 4.120.0's bundled local runtime supports compatibility dates through 2026-08-08, one day earlier than the work date.
   Evidence: the first local start rejected `2026-08-09`; changing only `wrangler.toml` to `2026-08-08` started the Worker successfully without losing required Node compatibility.
+
+- Observation: GitHub publication did not update the production FTX page, and direct Wrangler deployment cannot authenticate from the laptop.
+  Evidence: the public `/ribbot` JavaScript chunk still contains the old “Set up Spot & NFT trading” copy after both pushes; Wrangler 3.114.15 and 4.120.0 both report that the saved auth is expired, and `CLOUDFLARE_API_TOKEN` is absent.
 
 ## Decision Log
 
@@ -57,7 +61,7 @@ The user-visible proof is a production Worker health endpoint that returns HTTP 
 
 ## Outcomes & Retrospective
 
-The implementation milestone is complete. The real local Worker returned durable health ready, rejected an unauthenticated webhook with HTTP 401, accepted test update ID 7002 once, and returned `duplicate: true` on the replay. Production deployment and activation remain; the migration is complete only after the Worker is deployed, the Telegram webhook is registered to it, and no Mini process is started.
+The implementation and GitHub publication milestones are complete. The real local Worker returned durable health ready, rejected an unauthenticated webhook with HTTP 401, accepted a test update once, and returned `duplicate: true` on replay. Production deployment and activation remain blocked on an approved Cloudflare authentication refresh and the two existing Ribbot service credentials; no Mini process or access path was used.
 
 ## Context and Orientation
 
@@ -124,3 +128,5 @@ The Worker exports the default `fetch` and `scheduled` handlers plus the `Ribbot
 Plan revision note (2026-08-10): created after the runtime and credential audit to make the Mac-to-Cloudflare migration restartable and to document the production activation blocker without copying secret material.
 
 Plan revision note (2026-08-10): updated after implementation and the local Worker/Durable Object acceptance pass; recorded the supported compatibility date and narrowed the remaining work to final verification, publication, secret binding, and webhook activation.
+
+Plan revision note (2026-08-10): updated after GitHub publication and the failed production authentication gate; recorded exact commits, the unchanged public page, and the approval-gated Cloudflare/Ribbot credential blockers.
