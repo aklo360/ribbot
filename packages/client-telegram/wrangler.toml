@@ -1,0 +1,28 @@
+name = "ribbot-telegram"
+main = "src/worker.ts"
+compatibility_date = "2026-08-08"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+TG_TRADER = "true"
+RIBBOT_SPOT_ENABLED = "false"
+RIBBOT_NFT_TRADING_ENABLED = "true"
+RIBBOT_TRADING_ENABLED = "false"
+RIBBOT_TRADING_DRY_RUN = "true"
+RIBBOT_QUOTE_PREVIEWS_ENABLED = "true"
+RIBBOT_TRADING_CONFIRM_TRADES = "true"
+RIBBOT_ACTIVITY_ALERTS_ENABLED = "false"
+RIBBOT_ACTIVITY_ALERT_MAX_USERS_PER_POLL = "25"
+RIBBOT_ACTIVITY_ALERT_MAX_EVENTS_PER_MESSAGE = "5"
+FROGX_API_BASE_URL = "https://frogx-api.aklo.workers.dev"
+
+[[durable_objects.bindings]]
+name = "RIBBOT_COORDINATOR"
+class_name = "RibbotCoordinator"
+
+[[migrations]]
+tag = "v1-ribbot-coordinator"
+new_sqlite_classes = ["RibbotCoordinator"]
+
+[triggers]
+crons = ["* * * * *"]

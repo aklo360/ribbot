@@ -5,6 +5,7 @@ import { Context, Telegraf } from "telegraf";
 import { parseBoolean, type SettingsSource } from "./trading/config.ts";
 import { logger } from "./trading/logger.ts";
 import { TradingBot } from "./trading/TradingBot.ts";
+import { buildFrogContactSheet } from "./trading/frogContactSheet.ts";
 
 type StandaloneEnvironment = Record<string, string | undefined>;
 
@@ -57,7 +58,8 @@ async function start(): Promise<void> {
     const bot = new Telegraf<Context>(token);
     const tradingBot = new TradingBot(
         bot,
-        createEnvironmentSettings(process.env)
+        createEnvironmentSettings(process.env),
+        { buildFrogContactSheet }
     );
 
     bot.use(async (ctx, next) => {

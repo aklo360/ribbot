@@ -5,7 +5,10 @@ import {
     type TradingConfig,
 } from "./config.ts";
 import { logger } from "./logger.ts";
-import { ActivityAlertPoller } from "./activityAlerts.ts";
+import {
+    ActivityAlertPoller,
+    type ActivityAlertPollResult,
+} from "./activityAlerts.ts";
 import {
     parseAutoBuyIntent,
     type AutoBuyCommandIntent,
@@ -17,10 +20,7 @@ import {
 import { requiresTradeConfirmation } from "./tradePolicy.ts";
 import { marketRiskQuoteBlockingReason } from "./marketRiskMessaging.ts";
 import { solscanTransactionLine, solscanTransactionLines } from "./solscan.ts";
-import {
-    buildFrogContactSheet,
-    FROG_CONTACT_SHEET_PAGE_SIZE,
-} from "./frogContactSheet.ts";
+import type { FrogContactSheetItem } from "./frogContactSheet.ts";
 import {
     parseWalletCommand,
     type WalletCommandIntent,
@@ -136,6 +136,7 @@ const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const FROG_CONFIRMATION_POLL_INTERVAL_MS = 3_000;
 const FROG_CONFIRMATION_MAX_ATTEMPTS = 40;
 const FROG_BULK_SELL_PROMPT_TTL_MS = 2 * 60 * 1_000;
+const FROG_CONTACT_SHEET_PAGE_SIZE = 12;
 const RIBBOT_BETA_INTRO = [
     "Gribbit, nice to meet you. 🐸",
     "",
@@ -143,9 +144,11 @@ const RIBBOT_BETA_INTRO = [
     "",
     "Let's set up your accounts.",
     "",
-    "1. Spot & NFT trading on Frog Trading Exchange",
+    "1. Spot Trading — Coming Soon",
     "",
-    "2. Perps powered by Imperial",
+    "2. NFT Trading on Frog Trading Exchange",
+    "",
+    "3. Perps powered by Imperial",
     "",
     "Privy secures your account and wallet key.",
 ].join("\n");
@@ -158,6 +161,12 @@ type ManualReviewDisplay = {
 };
 
 type FrogTradeReconciliationOutcome = "handled" | "pending" | "retry";
+
+export type TradingBotOptions = {
+    store?: TradingStateStore;
+    buildFrogContactSheet?: (items: FrogContactSheetItem[]) => Promise<Buffer>;
+    scheduleFrogConfirmations?: boolean;
+};
 
 type ParsedIntent =
     | { kind: "onboarding"; referralCode?: string }
@@ -277,17 +286,26 @@ export class TradingBot {
     private readonly config: TradingConfig;
     private readonly store: TradingStateStore;
     private readonly activityAlertPoller: ActivityAlertPoller;
+    private readonly buildFrogContactSheet?: TradingBotOptions["buildFrogContactSheet"];
+    private readonly scheduleFrogConfirmations: boolean;
     private readonly frogConfirmationTimers = new Map<
         string,
         ReturnType<typeof setTimeout>
     >();
-    private readonly pendingFrogBulkSellPrompts = new Map<string, number>();
     private frogConfirmationPollingStopped = false;
 
-    constructor(bot: Telegraf<Context>, runtime: SettingsSource) {
+    constructor(
+        bot: Telegraf<Context>,
+        runtime: SettingsSource,
+        options: TradingBotOptions = {}
+    ) {
         this.bot = bot;
         this.config = loadTradingConfig(runtime);
-        this.store = new TradingStateStore(this.config.stateFile);
+        this.store =
+            options.store ?? new TradingStateStore(this.config.stateFile);
+        this.buildFrogContactSheet = options.buildFrogContactSheet;
+        this.scheduleFrogConfirmations =
+            options.scheduleFrogConfirmations ?? true;
         this.activityAlertPoller = new ActivityAlertPoller({
             enabled: this.config.activityAlertsEnabled,
             tgTrader: this.config.tgTrader,
@@ -328,13 +346,76 @@ export class TradingBot {
         return this.activityAlertPoller.start();
     }
 
+    pollActivityAlertsOnce(): Promise<ActivityAlertPollResult> {
+        return this.activityAlertPoller.pollOnce();
+    }
+
+    hasPendingFrogConfirmations(): boolean {
+        return this.store
+            .listUsers()
+            .some((user) =>
+                Object.values(user.frogTradeTickets ?? {}).some(
+                    (ticket) =>
+                        Boolean(ticket.currentExecutionId) &&
+                        this.frogConfirmationWindowIsOpen(ticket)
+                )
+            );
+    }
+
+    async reconcilePendingFrogTrades(): Promise<number> {
+        let pending = 0;
+        for (const user of this.store.listUsers()) {
+            for (const ticket of Object.values(user.frogTradeTickets ?? {})) {
+                if (
+                    !ticket.currentExecutionId ||
+                    !this.frogConfirmationWindowIsOpen(ticket)
+                ) {
+                    continue;
+                }
+                const ctx = {
+                    reply: (
+                        text: string,
+                        extra?: Parameters<
+                            typeof this.bot.telegram.sendMessage
+                        >[2]
+                    ) =>
+                        this.bot.telegram.sendMessage(
+                            user.telegramUserId,
+                            text,
+                            extra
+                        ),
+                } as unknown as Context;
+                const outcome = await this.reconcileFrogTradeStatus(
+                    ctx,
+                    user,
+                    ticket.id,
+                    {
+                        expectedExecutionId: ticket.currentExecutionId,
+                        notifyPending: false,
+                    }
+                );
+                if (outcome === "pending" || outcome === "retry") pending += 1;
+            }
+        }
+        return pending;
+    }
+
+    private frogConfirmationWindowIsOpen(ticket: FrogTradeTicket): boolean {
+        const updatedAt = Date.parse(ticket.updatedAt);
+        return (
+            Number.isFinite(updatedAt) &&
+            Date.now() - updatedAt <=
+                FROG_CONFIRMATION_POLL_INTERVAL_MS *
+                    FROG_CONFIRMATION_MAX_ATTEMPTS
+        );
+    }
+
     async stopActivityAlerts(): Promise<void> {
         this.frogConfirmationPollingStopped = true;
         for (const timer of this.frogConfirmationTimers.values()) {
             clearTimeout(timer);
         }
         this.frogConfirmationTimers.clear();
-        this.pendingFrogBulkSellPrompts.clear();
         await this.activityAlertPoller.stop();
     }
 
@@ -383,7 +464,7 @@ export class TradingBot {
                 await this.replyDeltaNeutralStopReview(ctx, user);
                 return true;
             case "spotComingSoon":
-                await this.replyBetaUnavailable(ctx, user);
+                await this.replySpotComingSoon(ctx, user);
                 return true;
             case "wallet":
                 await this.replyWallet(
@@ -597,7 +678,7 @@ export class TradingBot {
         }
 
         if (action === "spot") {
-            await this.replyBetaUnavailable(ctx, user);
+            await this.replySpotComingSoon(ctx, user);
             return true;
         }
 
@@ -1308,6 +1389,12 @@ export class TradingBot {
                                   ),
                               ],
                           ]),
+                    [
+                        Markup.button.callback(
+                            "Spot Trading — Coming Soon",
+                            "ribbot:spot"
+                        ),
+                    ],
                     [
                         Markup.button.callback(
                             "Perps Farmer",
@@ -2573,6 +2660,8 @@ export class TradingBot {
                     const readyLines = [
                         "Ribbot is ready.",
                         "",
+                        "Spot Trading — Coming Soon",
+                        "",
                         "/farm - open your Delta Neutral farmer",
                         "Powered by Imperial",
                         ...(this.config.nftTradingEnabled
@@ -2586,6 +2675,12 @@ export class TradingBot {
                     await ctx.reply(
                         readyLines.join("\n"),
                         Markup.inlineKeyboard([
+                            [
+                                Markup.button.callback(
+                                    "Spot Trading — Coming Soon",
+                                    "ribbot:spot"
+                                ),
+                            ],
                             [
                                 Markup.button.callback(
                                     "Farm",
@@ -2947,8 +3042,8 @@ export class TradingBot {
                 ...(holdings.total === 0 ? ["", "No Frogs found."] : []),
             ].join("\n");
             const contactSheet =
-                holdings.items.length > 0
-                    ? await buildFrogContactSheet(
+                holdings.items.length > 0 && this.buildFrogContactSheet
+                    ? await this.buildFrogContactSheet(
                           holdings.items.map((frog) => ({
                               label: frogDisplayName(frog.name),
                               image: frog.image,
@@ -3062,15 +3157,21 @@ export class TradingBot {
             ].join("\n");
             const media = frog.image
                 ? frog.image
-                : Input.fromBuffer(
-                      await buildFrogContactSheet([
-                          {
-                              label: frogDisplayName(frog.name),
-                              image: null,
-                          },
-                      ]),
-                      `${frogDisplayName(frog.name).replace("#", "frog-")}.png`
-                  );
+                : this.buildFrogContactSheet
+                  ? Input.fromBuffer(
+                        await this.buildFrogContactSheet([
+                            {
+                                label: frogDisplayName(frog.name),
+                                image: null,
+                            },
+                        ]),
+                        `${frogDisplayName(frog.name).replace("#", "frog-")}.png`
+                    )
+                  : undefined;
+            if (!media) {
+                await ctx.editMessageText(caption, keyboard);
+                return;
+            }
             await ctx.editMessageMedia(
                 { type: "photo", media, caption },
                 keyboard
@@ -3303,8 +3404,8 @@ export class TradingBot {
         user: TradingUser,
         message = "How many Frogs do you want to sell?"
     ): Promise<void> {
-        this.pendingFrogBulkSellPrompts.set(
-            user.telegramUserId,
+        this.store.setFrogBulkSellPromptExpiresAt(
+            user,
             Date.now() + FROG_BULK_SELL_PROMPT_TTL_MS
         );
         await ctx.reply(
@@ -3318,16 +3419,14 @@ export class TradingBot {
         user: TradingUser,
         text: string
     ): Promise<boolean> {
-        const expiresAt = this.pendingFrogBulkSellPrompts.get(
-            user.telegramUserId
-        );
+        const expiresAt = this.store.getFrogBulkSellPromptExpiresAt(user);
         if (!expiresAt) return false;
         if (expiresAt <= Date.now()) {
-            this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+            this.store.setFrogBulkSellPromptExpiresAt(user);
             return false;
         }
         if (text.trim().startsWith("/")) {
-            this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+            this.store.setFrogBulkSellPromptExpiresAt(user);
             return false;
         }
         const requestedQuantity = Number(text.trim());
@@ -3344,7 +3443,7 @@ export class TradingBot {
             return true;
         }
 
-        this.pendingFrogBulkSellPrompts.delete(user.telegramUserId);
+        this.store.setFrogBulkSellPromptExpiresAt(user);
         await this.replyFrogBulkSellReview(ctx, user, requestedQuantity);
         return true;
     }
@@ -3668,6 +3767,7 @@ export class TradingBot {
         attempt = 1
     ): void {
         if (
+            !this.scheduleFrogConfirmations ||
             this.frogConfirmationPollingStopped ||
             attempt > FROG_CONFIRMATION_MAX_ATTEMPTS
         ) {
@@ -9003,6 +9103,7 @@ export class TradingBot {
                     connected
                         ? "/start - open Ribbot"
                         : "/start - connect your Frog Trading Exchange account",
+                    "/spot - Spot Trading is coming soon",
                     "/farm - open your Delta Neutral farmer",
                     "/status - check your Imperial Perps Wallet",
                     ...(this.config.nftTradingEnabled
@@ -9133,6 +9234,40 @@ export class TradingBot {
                     ? []
                     : [
                           "Connect your Frog Trading Exchange account now and this same account will work as new features become available.",
+                      ]),
+                "",
+                "No quote, order, signature, or transaction was created.",
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                ...(connected
+                    ? []
+                    : [
+                          [
+                              Markup.button.callback(
+                                  "Connect Account",
+                                  "ribbot:farm"
+                              ),
+                          ],
+                      ]),
+                [Markup.button.callback("Menu", "ribbot:menu")],
+            ])
+        );
+    }
+
+    private async replySpotComingSoon(
+        ctx: Context,
+        user: TradingUser
+    ): Promise<void> {
+        const connected = this.hasConnectedAccount(user);
+        await ctx.reply(
+            [
+                "Spot Trading is coming soon.",
+                ...(connected
+                    ? [
+                          "Your Frog Trading Exchange account will work here when Spot launches.",
+                      ]
+                    : [
+                          "Connect your Frog Trading Exchange account now and this same account will work here when Spot launches.",
                       ]),
                 "",
                 "No quote, order, signature, or transaction was created.",
