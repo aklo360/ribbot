@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
-This plan follows the active ExecPlan standard and builds on the product and safety boundaries in `plans/trojan-style-trading-bot.md`.
+This plan follows the active ExecPlan standard and builds on the product and safety boundaries in `docs/plans/trojan-style-trading-bot.md`.
 
 ## Purpose / Big Picture
 

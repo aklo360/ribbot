@@ -4,7 +4,7 @@ Status: active implementation PRD; Fable handoff retained for history
 Date: 2026-07-06; resumed by LLPhant 2026-07-10
 Primary objective: turn Ribbot into a full-featured Telegram trading bot comparable to Trojan on Solana, with all wallet, signing, routing, automation, and execution controlled by FTX/FrogX.
 
-Continuation checkpoint: Fable stopped after the 2026-07-06 P0 Telegram UX/type-safety pass recorded in `plans/trojan-style-trading-bot.md`; FTX backend files were unchanged after the prior 2026-07-04 implementation. LLPhant resumed on 2026-07-10 and hardened scheduled orders, direct swaps/withdrawals, bundle sequences, copytrade, sniper, auto-buy, and auto-sell with atomic FTX claims where applicable, Privy idempotency keys, explicit lifecycle state, read-only Privy reconciliation, stale-write protection, deterministic activity/PNL events, and Ribbot recovery rendering. Sniper now observes Jupiter recent first-pool launches inside FTX, baselines/deduplicates candidates, applies strict source/risk/cap/cooldown/account checks, and remains live-disabled by default. Executing advanced configs expose user-triggered Check Status through authenticated FTX GET-only reconciliation routes. A shared 900-second default manual-review clock escalates every unresolved execution family through durable FTX metadata/events and Ribbot lock guidance. A separate FTX operator token now protects a global pull-based queue, audit-only acknowledgement, and evidence-only reconciliation; no endpoint can force terminal state or resend. FTX PNL now lazily indexes bounded confirmed wallet-level asset flow from Solana balances and reports explicit confirmed/estimated coverage, while USD output remains net-SOL/current-price estimation without decoded DEX-route fills or realized/FIFO tax lots. The FTX `/profile` revamp and code-level bot-first Privy claim/export/signer-control flow were also completed and browser/build verified where no live identity was required. Milestone 42 added FTX-owned Simple/Advanced mode, dynamic buy/sell presets, separate sell fees, and sell protection across Telegram and `/ribbot`; confirm-off tickets still use the same FTX execution boundary, while protected sells above 75% retain explicit confirmation. Milestone 43 added paginated FTX-valued holdings and per-position Buy/Sell/Scan/Safety/Hide controls without adding any Ribbot-side RPC or execution authority. No deploy or live Privy/Solana/Telegram action occurred.
+Continuation checkpoint: Fable stopped after the 2026-07-06 P0 Telegram UX/type-safety pass recorded in `docs/plans/trojan-style-trading-bot.md`; FTX backend files were unchanged after the prior 2026-07-04 implementation. LLPhant resumed on 2026-07-10 and hardened scheduled orders, direct swaps/withdrawals, bundle sequences, copytrade, sniper, auto-buy, and auto-sell with atomic FTX claims where applicable, Privy idempotency keys, explicit lifecycle state, read-only Privy reconciliation, stale-write protection, deterministic activity/PNL events, and Ribbot recovery rendering. Sniper now observes Jupiter recent first-pool launches inside FTX, baselines/deduplicates candidates, applies strict source/risk/cap/cooldown/account checks, and remains live-disabled by default. Executing advanced configs expose user-triggered Check Status through authenticated FTX GET-only reconciliation routes. A shared 900-second default manual-review clock escalates every unresolved execution family through durable FTX metadata/events and Ribbot lock guidance. A separate FTX operator token now protects a global pull-based queue, audit-only acknowledgement, and evidence-only reconciliation; no endpoint can force terminal state or resend. FTX PNL now lazily indexes bounded confirmed wallet-level asset flow from Solana balances and reports explicit confirmed/estimated coverage, while USD output remains net-SOL/current-price estimation without decoded DEX-route fills or realized/FIFO tax lots. The FTX `/profile` revamp and code-level bot-first Privy claim/export/signer-control flow were also completed and browser/build verified where no live identity was required. Milestone 42 added FTX-owned Simple/Advanced mode, dynamic buy/sell presets, separate sell fees, and sell protection across Telegram and `/ribbot`; confirm-off tickets still use the same FTX execution boundary, while protected sells above 75% retain explicit confirmation. Milestone 43 added paginated FTX-valued holdings and per-position Buy/Sell/Scan/Safety/Hide controls without adding any Ribbot-side RPC or execution authority. No deploy or live Privy/Solana/Telegram action occurred.
 
 Milestone 44 adds FTX-owned managed copytrade strategies: optional tags, fixed or percentage sizing, a hard buy cap, target-buy minimum, separate sell priority fee, copy-sell and duplicate-buy controls, renounced-mint enforcement, minimum/maximum market cap, liquidity probing, token blacklists, and durable pause/resume. Ribbot parses and renders these controls, but FTX stores and enforces them before `/execute`; executing strategies cannot be paused, paused strategies do not scan, and every ambiguous send remains on the existing read-only no-resend reconciliation path. At that checkpoint strategy edit/duplicate and Pump.fun exclusion remained; milestones 45 and 46 below complete them. Live verification remains unfinished, and blind execution retries remain intentionally prohibited.
 
@@ -35,8 +35,8 @@ Primary Ribbot files:
 - `packages/client-telegram/src/trading/config.ts`
 - `packages/client-telegram/src/trading/frogx.ts`
 - `packages/client-telegram/src/trading/state.ts`
-- `plans/trojan-style-trading-bot.md`
-- `plans/trading-bot-manual-review-runbook.md`
+- `docs/plans/trojan-style-trading-bot.md`
+- `docs/plans/trading-bot-manual-review-runbook.md`
 - `CHANGELOG.md`
 
 Primary FTX files:
@@ -92,7 +92,7 @@ Already implemented at code level:
 - Ribbot renders non-cancelled advanced configs across staged/executing/failed/executed state with Privy status, signature, and failure details; locked cancellation conflicts refresh from FTX rather than mutating local cache.
 - Atomic bundle execution claim/progress state plus Ribbot Check Status. Ambiguous items remain locked for read-only FTX/Privy reconciliation; interrupted partial baskets never auto-resume.
 - Shared bounded-age unresolved-execution escalation. FTX derives a configurable review deadline from the persisted execution start for direct, scheduled, bundle, and advanced paths, records a deterministic non-secret `execution_manual_review_required` event after expiry, and returns the deadline/timestamp/reason to Ribbot. Ribbot persists and renders those fields with explicit no-retry/operator-inspection guidance; escalation does not mark success/failure or send again.
-- FTX-owned operator review queue. `TRADING_BOT_OPERATOR_TOKEN` is separate from Ribbot auth and protects list, acknowledge, and reconcile routes. Acknowledgement is audit-only; reconcile invokes existing Privy GET-only wallet/chain checks for direct, scheduled, bundle, and advanced cases and closes only on terminal evidence. Normal terminal reconciliation also closes queued cases. Ribbot only renders acknowledgement/resolution activity; the no-secret workflow is in `plans/trading-bot-manual-review-runbook.md`.
+- FTX-owned operator review queue. `TRADING_BOT_OPERATOR_TOKEN` is separate from Ribbot auth and protects list, acknowledge, and reconcile routes. Acknowledgement is audit-only; reconcile invokes existing Privy GET-only wallet/chain checks for direct, scheduled, bundle, and advanced cases and closes only on terminal evidence. Normal terminal reconciliation also closes queued cases. Ribbot only renders acknowledgement/resolution activity; the no-secret workflow is in `docs/plans/trading-bot-manual-review-runbook.md`.
 - Referral/reward hooks as tracking-only account metadata.
 - Local Ribbot state is a non-secret cache under ignored `.state/`.
 
@@ -100,7 +100,7 @@ Known incomplete areas:
 - Trojan multi-wallet parity is foundational, not complete. FTX now persists/discovers up to ten managed Privy wallet slots and Telegram can select the active slot. Creating additional managed wallets, importing an existing wallet, per-wallet account controls, disperse, ETH/SOL bridge flows, and automation that continues across inactive slots remain unfinished.
 - The existing `/bundle` implementation is a multi-token basket in one wallet and is now labeled Basket Buy. Trojan Bundle Buy means buying one token across selected wallets; true multi-wallet bundle validation, balance preflight, atomic claim/progress, execution, and reconciliation are not implemented yet.
 - Live verification has not been performed with approved real Privy credentials, signer policy, funded wallet, Telegram bot session, and Solana execution.
-- Privy account control is code-complete but not live-configured or live-verified. The Privy Dashboard Telegram/domain setup and matching public app/signer/policy IDs must pass `plans/privy-account-control-live-checklist.md` before use.
+- Privy account control is code-complete but not live-configured or live-verified. The Privy Dashboard Telegram/domain setup and matching public app/signer/policy IDs must pass `docs/plans/privy-account-control-live-checklist.md` before use.
 - Scheduled, direct, bundle, copytrade, sniper, auto-buy, and auto-sell reconciliation, bounded-age escalation, the operator queue, and push-alert projection/delivery state are mock-verified but not live-verified. Persistent Privy `not_found` or lookup errors correctly remain locked; operator-secret configuration, private alert enablement, private workflow verification, and operational dashboarding remain.
 - Sniper is code-complete but not live-configured or live-verified. Jupiter launchpad classifications for the supported `pump`, `raydium`, and `moonshot` source filters must be checked against approved live feed samples before enabling execution.
 - Referral fee share, payouts, claimable rewards, and token transfers are not implemented.
@@ -172,7 +172,7 @@ Required:
 
 Remaining work:
 - Configure the approved Privy Telegram login/domain client and matching public app/signer/policy IDs.
-- Run `plans/privy-account-control-live-checklist.md` only after explicit approval; do not expose export material.
+- Run `docs/plans/privy-account-control-live-checklist.md` only after explicit approval; do not expose export material.
 - Add user-facing copy that distinguishes:
   - quote-only external wallet
   - FTX-managed Privy wallet
@@ -506,7 +506,7 @@ P1: Live verification preparation
 
 P2: True Privy account management
 - Code-level Telegram-authenticated claim/export and signer remove/restore controls are complete as of 2026-07-10.
-- Configure and privately live-verify the Privy Dashboard/domain/public-ID prerequisites using `plans/privy-account-control-live-checklist.md` only after approval.
+- Configure and privately live-verify the Privy Dashboard/domain/public-ID prerequisites using `docs/plans/privy-account-control-live-checklist.md` only after approval.
 - Preserve FTX-side bot-access revocation as a fast local safety layer.
 
 P3: Live scheduled execution
@@ -589,10 +589,10 @@ The project is done only when all of these are true:
 ## 11. Continuation Checklist
 
 1. Inspect `git status --short` in both `../ftx` and `.`.
-2. Read `../ftx/AGENTS.md`, `../ftx/CHANGELOG.md`, `CHANGELOG.md`, and `plans/trojan-style-trading-bot.md`.
+2. Read `../ftx/AGENTS.md`, `../ftx/CHANGELOG.md`, `CHANGELOG.md`, and `docs/plans/trojan-style-trading-bot.md`.
 3. Inspect current FTX routes and Ribbot command handlers before editing.
 4. Pick the next unfinished P0/P1 item from this PRD.
 5. Keep all changes scoped to the FTX/Ribbot boundary.
 6. Run the verification matrix.
-7. Update `CHANGELOG.md` and `plans/trojan-style-trading-bot.md` when behavior changes.
+7. Update `CHANGELOG.md` and `docs/plans/trojan-style-trading-bot.md` when behavior changes.
 8. Do not deploy or run live tests without AKLO's explicit approval.

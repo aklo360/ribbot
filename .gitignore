@@ -20,8 +20,7 @@ out/
 .env.production
 .dev.vars
 
-# Private local agent context
-AGENTS.md
+# Private local provider state; the public-safe project AGENTS.md is versioned.
 CLAUDE.md
 .codex/
 .claude/

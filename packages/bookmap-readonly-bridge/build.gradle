@@ -1,0 +1,45 @@
+plugins {
+    id 'java'
+}
+
+// Target Java 17 bytecode. Do NOT raise this to match a newer bundled JRE:
+// Bookmap finds the @Layer1Attachable entry point by scanning bytecode with ASM, which can't
+// parse class files newer than the bundled ASM supports — too-new bytecode makes Bookmap report
+// "No entry points found in jar". Java 17 matches the official DemoStrategies and loads everywhere.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+dependencies {
+    // Compile against the installed Bookmap jars (provided at runtime by Bookmap).
+    // No network needed; the API version always matches this installation.
+    compileOnly fileTree(dir: '/Applications/Bookmap.app/Contents/app/lib', include: ['*.jar'])
+
+    // Tests load the add-on lifecycle and parse its output, but these jars are never bundled.
+    testImplementation files('/Applications/Bookmap.app/Contents/app/lib/gson-2.13.2.jar')
+    testCompileOnly fileTree(dir: '/Applications/Bookmap.app/Contents/app/lib', include: ['*.jar'])
+    testRuntimeOnly fileTree(dir: '/Applications/Bookmap.app/Contents/app/lib', include: ['*.jar'])
+}
+
+jar {
+    archiveFileName = 'ribbot-bookmap-read-only-bridge.jar'
+}
+
+tasks.register('selfTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.aklostudio.ribbot.bookmap.BridgeSelfTest'
+}
+
+// The project uses a dependency-free executable self-test instead of a test framework.
+tasks.named('test') {
+    enabled = false
+}
+
+check.dependsOn selfTest
